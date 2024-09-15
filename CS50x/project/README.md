@@ -10,6 +10,5 @@ The sensors used in this project are _Waveshare BME280 Environmental Sensor – 
 
 The third problem is hardware related. I2C protocol is meant for short distances, but the measurements requires often extended lengths. The signal is then weakened. It increases the probability of sensor failure. Better cables, signal amplification, etc. can help in this issue, but there is an alternative way how to handle these failures. Rebooting the sensor will initialize it back to normal working mode. A relay can be used to open the electrical circuit, and with two relays both +3.3 V VCC and GND can be opened which shut down the relay. The sensor has two be shutdown for a small amount of time (0.1 s), then the relays are turned back to NC (normally closed) position. The circuit is now closed, and an additional small delay (0.1 s) must be given for the sensor booting to normal operation mode. This procedure recovers a failed sensor back to normal working state.
 
-A third relay can be used for failures simulation. Depending of the driver either VCC or GND must pe opened in order to simulate a sensor failure. An electrical diagram, for three relays, is shown here:                                                 
-
+A third relay can be used for failures simulation. Depending of the driver either VCC or GND must pe opened in order to simulate a sensor failure. An electrical diagram, for three relays, is shown here:                         
 ![Electric diagram](relays.png)
