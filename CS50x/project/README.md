@@ -2,3 +2,4 @@
 #### Video Demo:  <URL HERE>
 #### Description:
 TODO
+![Electric diagram](relays.png)
