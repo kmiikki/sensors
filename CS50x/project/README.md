@@ -82,3 +82,31 @@ Relay class
 
 Non-standard modules:
 * RPi.GPIO
+
+##4 Program Description and Flow
+
+The main program, bm280logger.py should be opened in an environment where the required modules are installed. If the script resides in a path variable, it can be launched from the working directory.
+
+The program is started with the desired arguments, which can be listed with the -h argument:
+
+`BME280 data logger - Kim Miikki 2024`  
+
+`usage: bme280logger.py [-h] [-d D] [-s] [-ts] [-i I] [-nan] [-r R] [-b] [-c]`  
+`                       [-a] [-simfail]`  
+
+`options:`  
+  
+`  -h, --help  show this help message and exit`  
+`  -d D        specify file base directory (default = current working`  
+`              directory)`  
+`  -s          enable datetime subdirectories`  
+`  -ts         add timestamp as prefix for files`  
+`  -i I        interval in seconds`  
+`  -nan        log failed readings as NaN`  
+`  -r R        data retention period in memory (default: 7 d)`  
+`  -b          create basic graphs`  
+`  -c          create graphs of two sensors`  
+`  -a          create all graphs`  
+`  -simfail    simulate random sensor failures`  
+
+The measurement data is saved in a log file whose name ends with "thp.csv". The desired directory path can be specified with -d argument, subdirectories named 'datetime' can be specified using the -s argument, and the 'datetime' prefix can be optionally added to the log file name with the -ts argument.
