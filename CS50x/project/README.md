@@ -119,4 +119,5 @@ Arguments -b, -c and -a control whether data graphs are created at the end of th
 
 The simulation requires a third relay, through which either the VCC or GND connection to the sensors is cut off, so the sensor can no longer be read.
 
-aaa
+After starting the program, the necessary Relay classes are created for the control of the power supply of the sensors and the simulation of the error state. After this, it is recognized how many BME280 sensors the program finds. This program requires a minimum of one and a maximum of two BME280 sensors to operate.
+
