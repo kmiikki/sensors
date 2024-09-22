@@ -26,3 +26,42 @@ BME280 data logger has following system requirements:
 The data logging system can be installed on a Raspberry Pi 4 computer, if the python3-rpi.gpio module is used instead of rpi-lgpio.
 
 ## 3 Python and Required Modules
+Python version 3.11.2 has been used in this project. The following list shows the scripts needed to run this program:
+
+**bme280logger.py**
+This script is the main program for the data logger.
+
+Standard modules:
+* sys
+* time
+* pathlib
+* datetime
+* argparse
+* math
+* os
+* random
+* re
+* signal
+* sys
+* threading
+
+**bme280.py**
+
+[Using the BME280 I2C Temperature and Pressure Sensor in Python 43](https://www.raspberrypi-spy.co.uk/2016/07/using-bme280-i2c-temperature-pressure-sensor-in-python/)
+
+import smbus
+import time
+from ctypes import c_short
+from ctypes import c_byte
+from ctypes import c_ubyte
+
+**bme280.py**
+
+aaa
+
+**logfile.py**
+
+bbb
+
+**relays.py**
+ccc
