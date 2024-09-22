@@ -31,29 +31,38 @@ Python version 3.11.2 has been used in this project. The following list shows th
 **bme280logger.py**
 This script is the main program for the data logger.
 
+Non-standard modules:
+* bme280.py (driver)
+* logfile.py (script)
+* relays.py (script)
+* board
+* Matplotlib
+* NumPy
+
 Standard modules:
-* sys
-* time
-* pathlib
-* datetime
+
 * argparse
+* datetime
 * math
 * os
+* pathlib
 * random
 * re
 * signal
 * sys
+* time
 * threading
 
 **bme280.py**
-
+Origin:
 [Using the BME280 I2C Temperature and Pressure Sensor in Python 43](https://www.raspberrypi-spy.co.uk/2016/07/using-bme280-i2c-temperature-pressure-sensor-in-python/)
 
-import smbus
-import time
-from ctypes import c_short
-from ctypes import c_byte
-from ctypes import c_ubyte
+Non-standard modules:
+* smbus
+
+Standard modules:
+ctypes
+time
 
 **bme280.py**
 
