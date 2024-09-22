@@ -15,6 +15,10 @@ A third relay can be used for failures simulation. Depending of the driver eithe
 
 ![Electric diagram](relays_compact.png)
 
-## 2 Hardware
+## 2 Hardware and Operating System
+BME280 data logger has following system requirements:
+* Raspberry Pi 5 model B 4 GB computer
+* Raspberry Pi OS (64-bit): Debian 12 (bookworm)
+* Screen resolution recommendation: FHD (1920x1080) or higher
 
-## 3 Operating System and Python
+## 3 Python and Required Modules
