@@ -29,6 +29,7 @@ The data logging system can be installed on a Raspberry Pi 4 computer, if the py
 Python version 3.11.2 has been used in this project. The following list shows the scripts needed to run this program:
 
 **bme280logger.py**
+
 This script is the main program for the data logger.
 
 Non-standard modules:
@@ -54,6 +55,9 @@ Standard modules:
 * threading
 
 **bme280.py**
+
+Driver, with I2C Address port support, for BME280 sensor.
+
 Origin:
 [Using the BME280 I2C Temperature and Pressure Sensor in Python 43](https://www.raspberrypi-spy.co.uk/2016/07/using-bme280-i2c-temperature-pressure-sensor-in-python/)
 
@@ -61,16 +65,20 @@ Non-standard modules:
 * smbus
 
 Standard modules:
-ctypes
-time
-
-**bme280.py**
-
-aaa
+* ctypes
+* time
 
 **logfile.py**
 
-bbb
+DataLog and ErrorLog classes
+
+Standard modules:
+* datetime
+* os
 
 **relays.py**
-ccc
+
+Relay class
+
+Non-standard modules:
+* RPi.GPIO
