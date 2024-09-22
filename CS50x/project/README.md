@@ -115,3 +115,6 @@ The measurement interval is specified with the -s argument, whose unit is second
 
 Unsuccessful measurements are logged in the error log, but they can be stored as NaN values ​​in the THP log if desired. By default, they are not saved there, but the -nan argument can be used to enable saving.
 
+Arguments -b, -c and -a control whether data graphs are created at the end of the measurements, and which type. The -c option cannot be used with one sensor, because two sensors are needed for combination graphs.
+
+The simulation requires a third relay, through which either the VCC or GND connection to the sensors is cut off, so the sensor can no longer be read.
