@@ -19,6 +19,10 @@ A third relay can be used for failures simulation. Depending of the driver eithe
 BME280 data logger has following system requirements:
 * Raspberry Pi 5 model B 4 GB computer
 * Raspberry Pi OS (64-bit): Debian 12 (bookworm)
-* Screen resolution recommendation: FHD (1920x1080) or higher
+* One or two Waveshare BME280 Environmental Sensors (Temperature, Humidity, Barometric Pressure)
+* Three 5 V or 3.3 V relays for failures simulation, otherwise two relays is enough.
+  * Waveshare RPI Relay Board (3 relays) was used in this project.
+
+The data logging system can be installed on a Raspberry Pi 4 computer, if the python3-rpi.gpio module is used instead of rpi-lgpio.
 
 ## 3 Python and Required Modules
