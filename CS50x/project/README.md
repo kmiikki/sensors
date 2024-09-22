@@ -118,3 +118,5 @@ Unsuccessful measurements are logged in the error log, but they can be stored as
 Arguments -b, -c and -a control whether data graphs are created at the end of the measurements, and which type. The -c option cannot be used with one sensor, because two sensors are needed for combination graphs.
 
 The simulation requires a third relay, through which either the VCC or GND connection to the sensors is cut off, so the sensor can no longer be read.
+
+aaa
