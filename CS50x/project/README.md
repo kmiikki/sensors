@@ -59,7 +59,7 @@ Standard modules:
 Driver, with I2C Address port support, for BME280 sensor.
 
 Origin:
-[Using the BME280 I2C Temperature and Pressure Sensor in Python 43](https://www.raspberrypi-spy.co.uk/2016/07/using-bme280-i2c-temperature-pressure-sensor-in-python/)
+[Using the BME280 I2C Temperature and Pressure Sensor in Python](https://www.raspberrypi-spy.co.uk/2016/07/using-bme280-i2c-temperature-pressure-sensor-in-python/)
 
 Non-standard modules:
 * smbus
