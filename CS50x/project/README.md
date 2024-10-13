@@ -121,7 +121,7 @@ The simulation requires a third relay, through which either the VCC or GND conne
 
 After starting the program, the necessary Relay classes are created for the control of the power supply of the sensors and the simulation of the error state. After this, it is recognized how many BME280 sensors the program finds. This program requires a minimum of one and a maximum of two BME280 sensors to operate.
 
-The program is interrupted by pressing CTRL + C It causes an interrupt, which is handled by the SignalHandler_SIGINT function. If the disable_halt variable is set to True, program termination is not allowed at this stage. Otherwise, the desired graphs are created before ending the program. There are three functions in the program for creating graphs: create_graph_1, create_graph_2 and create_graph_combo.
+The program is interrupted by pressing CTRL + C. It causes an interrupt, which is handled by the SignalHandler_SIGINT function. If the disable_halt variable is set to True, program termination is not allowed at this stage. Otherwise, the desired graphs are created before ending the program. There are three functions in the program for creating graphs: create_graph_1, create_graph_2 and create_graph_combo.
 
 The program waits for the second to change using the get_sec_fractions() function. After that, a DataLog object is created, with which the measurement results are written to the mass memory, a possible error simulation is started and the initial time is measured with the per_counter() function.
 
