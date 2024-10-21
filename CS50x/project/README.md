@@ -1,6 +1,6 @@
 # Data Logger for BME280 Sensors on a Raspberry Pi
-#### Video Demo:  <URL HERE>
-#### Description:
+#### Video Demo:  https://youtu.be/62MMcRAne60
+#### Description: Data logger for BME280 sensors using a Raspberry Pi
 
 ## 1 Introduction
 It is relatively easy to build an environmental data logger on Raspberry Pi computer. Unfortunately there are some challenges that must be resolved, if a robust measuring system is required. The three main problems are: precise timing for measurements, use of multiple environmental sensors on the same computer, and how to recover sensor failures.
