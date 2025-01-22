@@ -81,4 +81,4 @@ python bme280logger-v2.py -d /data/logs -i 2.0 -b -cal A,1,2
 
 - **Version 2** focuses on optimized data logging and CSV-based storage.
 - Future versions may expand support for additional data storage formats and database systems.
-```
+- In the sample database calibrations.db there are two humidity calibrated sensors. This file can be deleted or overwritten with your own calibration file, as long as its name is the same.
