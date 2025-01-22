@@ -1,8 +1,3 @@
-It seems there was an issue providing the download link for the file. I’ll try saving the file again and ensuring you can access it.
-
-It seems there’s still an issue with saving the file. I'll provide you with the complete Markdown content here so you can copy and paste it into a file locally:
-
-```markdown
 # BME280Logger-V2
 
 BME280Logger-V2 is an advanced data logging script for collecting and analyzing environmental data (temperature, humidity, and pressure) from the BME280 sensor. It enhances features from its predecessor, `bme280logger.py`, while improving efficiency and flexibility for various applications.
@@ -87,5 +82,3 @@ python bme280logger-v2.py -d /data/logs -i 2.0 -b -cal A,1,2
 - **Version 2** focuses on optimized data logging and CSV-based storage.
 - Future versions may expand support for additional data storage formats and database systems.
 ```
-
-Copy this content and save it as `README.md` on your local system. Let me know if you need further assistance!
