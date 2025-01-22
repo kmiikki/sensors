@@ -2,12 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Required files:
-    project.py
+    bme280logger-v2.py
     thp_db.sql
     
-    
 Created on Mon Nov 11 12:40:32 2024
-
 @author: Kim Miikki
 """
 import argparse
