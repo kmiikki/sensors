@@ -1,0 +1,7 @@
+argparse
+matplotlib
+numpy
+RPi.GPIO
+smbus
+sqlite3
+ctypes
