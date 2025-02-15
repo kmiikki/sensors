@@ -268,18 +268,6 @@ def get_latest_ref_calibration_date(cursor, ref_sn_id):
     return result[0] if result else None
 
 
-# Function to get last reference calibration date
-def get_ref_calibration_dates(cursor, ref_sn_id):
-    cursor.execute("""
-        SELECT ref_calibration_date
-        FROM ref_calibration_dates
-        WHERE sn_id = ?
-        ORDER BY ref_calibration_date ASC
-    """, (ref_sn_id,))
-    dates = [row[0] for row in cursor.fetchall()]
-    return dates if dates else None
-
-
 # Function to add last reference calibraton date to the reference sensor
 def add_last_ref_cal_date(cursor, choices):
     global is_before_menu
@@ -411,7 +399,7 @@ def get_nearest_ref_calibration_date(cursor, date_str):
 # Define functions for each operation
 
 
-# Dsiplay all sensors in a zone
+# Display all sensors in a zone
 def list_sensors_in_zone(cursor, choices):
     zone = choices["zone"]
     ref_sn = choices["ref_sn"]
@@ -633,7 +621,7 @@ def assign_computer_to_sensor(cursor, choices):
             print('No sesnors in zone.')
             return
         
-        choices['sn'] =sn
+        choices['sn'] = sn
 
     print(f"Assign computer to zone {zone}")
     print(f"------------------------{'-' * len(zone)}")
@@ -745,6 +733,8 @@ def select_zone(cursor, choices):
         if zone == choices['zone']:
             print('Zone already selected.')
             return
+        if zone == '0' and is_before_menu:
+            sys.exit(0)
         if zone == "0":
             return
         if zone in zones:
@@ -1528,7 +1518,7 @@ def select_sensor_calibrations(cursor, zone, sn):
     return result
 
 
-# Generate and asve a calibration graph
+# Generate and save a calibration graph
 def generate_calibration_graph(cursor, choices):
     zone = choices["zone"]
     sn = choices["sn"]
@@ -2468,10 +2458,18 @@ def delete_calibration(cursor, choices):
 def list_ref_sensors(cursor, choices):
     print("Reference sensors:")
     cursor.execute("""
-        SELECT s.ref_name, s.serial_number, MAX(d.ref_calibration_date)
-        FROM ref_sensors s, ref_calibration_dates d
-        LEFT JOIN ref_calibration_dates ON s.serial_number = d.ref_cal_id
-        ORDER BY s.ref_name ASC
+		SELECT 
+			s.ref_name, 
+			s.serial_number, 
+			MAX(d.ref_calibration_date) AS last_cal_date
+		FROM ref_sensors s
+		LEFT JOIN ref_calibration_dates d 
+			ON s.serial_number = d.sn_id
+		GROUP BY 
+			s.ref_name, 
+			s.serial_number
+		ORDER BY 
+			s.ref_name ASC    
     """,)
     sensors = cursor.fetchall()
     if len(sensors) > 0:
