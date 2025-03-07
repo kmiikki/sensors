@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-bme280logger.py
+bme280logger-v2.py
 ---------------
 Data logger for BME280 sensors on a Raspberry Pi, with:
  - Automatic sensor detection & reading (including reboots via relay).
  - 5 consecutive failures => 1 hour cooldown logic.
- - Optional calibration for relative humidity (via thpcaldb).
- - Graph generation (Temperature, RH, Pressure) using raw or calibrated RH.
+ - Optional calibration for multiple sensor measurements (Temperature, Relative Humidity, Pressure) via thpcaldb.
+ - Graph generation (Temperature, RH, Pressure) using raw or calibrated values.
  - Data retention in memory, logging to CSV, and optional live console output.
 
-Created on Wed Aug 21 12:17:22 2024
+Updated to support multiple calibration types per sensor.
+Calibration columns (in CSV and on-screen) are dynamically added based on which calibrations are available.
+For example, if only RH calibration exists for sensor 1, and Temperature plus RH for sensor 2, 
+the header might be: RHcal1% (%), Tcal2 (°C), RHcal2% (%)
 
+Created on Wed Aug 21 12:17:22 2024 (updated 2025)
 @author: Kim Miikki
 """
 
@@ -62,7 +66,7 @@ This row limitation guarantees sufficient memory for each measurement for
 COOLDOWN_DURATION = 30.0  # 1 hour in seconds
 
 # Program version
-version = 2.0
+version = 2.1
 
 # Relay pins
 relay_pin_list = [21, 20]
@@ -84,8 +88,13 @@ is_prefix = False
 is_basic_figures = False
 is_combo_figures = False
 
-# We can calibrate up to 2 sensors (or 1 if you only have 1 physically)
-rh_cal = [None, None]  # each element is either None or a Calibration object
+# Up to 2 sensors can be calibrated.
+# Each element is either None or a Calibration object that holds a dict of calibrations.
+sensor_cals = [None, None]
+# This global will later hold, per sensor, a list of available calibration types.
+sensor_cal_types = []
+# Disable sensor plots as default
+is_plot_calibration = False
 
 decimals = 2  # how many decimals to round sensor data
 
@@ -116,6 +125,14 @@ delay = 0.1
 # For handling Ctrl+C
 disable_halt = False
 
+# Data logging start time
+tstart = 0
+
+# Initialize sensor varaibles
+zone = ""
+num1 = -1
+num2 = -1
+
 # ------------------------------
 # ARGUMENT PARSING
 # ------------------------------
@@ -124,16 +141,10 @@ def parse_arguments():
     """
     Reads command-line arguments with argparse and sets relevant globals.
     """
-    global retention_time
-    global interval
-    global base_dir
-    global is_subdir
-    global is_prefix
-    global is_simulation
-    global is_nan_logging
-    global is_basic_figures
-    global is_combo_figures
-    global rh_cal
+    global retention_time, interval, base_dir, is_subdir, is_prefix
+    global is_simulation, is_nan_logging, is_basic_figures, is_combo_figures
+    global is_plot_calibration, sensor_cals
+    global zone, num1, num2
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", type=str, 
@@ -162,6 +173,9 @@ def parse_arguments():
         required=False)
     parser.add_argument("-a", action='store_true', 
         help="Create all graphs (both basic & combo) for up to 2 sensors",
+        required=False)
+    parser.add_argument("-p", action="store_true", 
+        help="Plot calibration graphs",
         required=False)
     parser.add_argument("-simfail", action="store_true", 
         help="Simulate random sensor failures with relays",
@@ -220,6 +234,9 @@ def parse_arguments():
     if args.a:
         is_basic_figures = True
         is_combo_figures = True
+        
+    if args.p:
+        is_plot_calibration = True
 
     # Simulation of failures
     if args.simfail:
@@ -230,24 +247,24 @@ def parse_arguments():
             print("No relay pin for failures simulation assigned. Exiting.")
             sys.exit(1)
 
-    # Calibration
+    # Calibration argument processing:
     if args.cal:
         zone, num1, num2 = parse_zone_numbers(args.cal)
         if zone:
-            # Build path to the calibration DB in the same dir as this script (optional usage)
+            # Build path to the calibration DB in the same dir as this script.
             script_dir = os.path.dirname(__file__)
             db_file = os.path.join(script_dir, "calibration.db")
 
             if num1:
-                rh_cal[0] = Calibration(db_file, zone, num1)
-                if rh_cal[0] is not None:
-                    print(f"Sensor {zone}{num1} calibration in use for sensor #1.")
+                sensor_cals[0] = Calibration(db_file, zone, num1)
+                if sensor_cals[0] is not None:
+                    print(f"Sensor {zone}{num1} calibrations in use for sensor #1. Available types: {list(sensor_cals[0]._cal_data.keys())}")
                 else:
                     print(f"No calibration found for {zone}{num1} (sensor #1).")
             if num2:
-                rh_cal[1] = Calibration(db_file, zone, num2)
-                if rh_cal[1] is not None:
-                    print(f"Sensor {zone}{num2} calibration in use for sensor #2.")
+                sensor_cals[1] = Calibration(db_file, zone, num2)
+                if sensor_cals[1] is not None:
+                    print(f"Sensor {zone}{num2} calibrations in use for sensor #2. Available types: {list(sensor_cals[1]._cal_data.keys())}")
                 else:
                     print(f"No calibration found for {zone}{num2} (sensor #2).")
             if num1 or num2:
@@ -257,13 +274,10 @@ def parse_arguments():
 # ------------------------------
 # HELPER FUNCTIONS
 # ------------------------------
-
 def get_sensors() -> list:
     """
-    Scans the I2C bus (via board.I2C) for 0x76 or 0x77 addresses
-    and returns a list of found device addresses (ints).
+    Scans the I2C bus (via board.I2C) for 0x76 or 0x77 addresses and returns a list of found device addresses.
     """
-    #import board
     i2c = board.I2C()
     while not i2c.try_lock():
         pass
@@ -287,7 +301,6 @@ def display_info():
     print('\nCurrent directory:')
     print(curdir)
     print('\nPress Ctrl+C to end logging.\n')
-
 
 def auto_scale(times: np.array, diff_time=False):
     """
@@ -315,26 +328,18 @@ def auto_scale(times: np.array, diff_time=False):
     else:
         unit = 'd'
         divisor = 3600 * 24
-
     if divisor > 1:
         times = times / divisor
     return times, unit
 
 
 def simulate_failure():
-    """
-    Thread routine for artificially opening a relay channel
-    with probability = pfail, to simulate sensor failure.
-    """
-    global pfail
-    global stop_threads
-    global relay_fail
+    global pfail, stop_threads, relay_fail
     while True:
         if stop_threads:
             break
-        rnd = random.random()
-        if rnd < pfail:
-            relay_fail.ch_open(1)  # For example, open channel #1
+        if random.random() < pfail:
+            relay_fail.ch_open(1)
         sleep(0.1)
 
 
@@ -363,27 +368,72 @@ def format_data(tdata: dict, data: np.array) -> str:
     ts = str(dt.timestamp())
     runtime = tdata["time"]
     measnum = tdata["N"]
-
-    out_list = [
-        t_str,
-        ts,
-        f"{runtime:.1f}",
-        str(measnum)
-    ]
+    out_list = [t_str, ts, f"{runtime:.1f}", str(measnum)]
     for value in data:
         val_rounded = round(value, decimals)
         out_list.append(f"{val_rounded:.{decimals}f}")
-
     return ", ".join(out_list)
 
 
-# ------------------------------
-# GRAPHING FUNCTIONS
-# ------------------------------
+# Write a log file of the THP logging
+def write_calibration_log(start_time, end_time, interval, sensor_cals, sensor_count, log_dir, zone, num1, num2):
+    """
+    Writes a calibration log file before generating graphs.
+    """
+    start_time_dt = datetime.fromtimestamp(start_time) if isinstance(start_time, float) else start_time
+    end_time_dt = datetime.fromtimestamp(end_time) if isinstance(end_time, float) else end_time
+    
+    log_filename = f"thp-{start_time_dt.strftime('%Y%m%d_%H%M%S')}.log"
+    log_path = os.path.join(log_dir, log_filename)
+    duration = end_time_dt - start_time_dt
+    
+    with open(log_path, "w") as log_file:
+        log_file.write("=== BME280 Data Logging Report ===\n\n")
+        log_file.write(f"Start Time: {start_time_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_file.write(f"End Time:   {end_time_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_file.write(f"Duration:   {str(duration)}\n")
+        log_file.write(f"Measurement Interval: {interval} seconds\n\n")
+        log_file.write(f"Number of Sensors: {sensor_count}\n\n")
+        
+        has_calibration = any(sensor_cals)
+        if has_calibration:
+            log_file.write("--- Calibration Data ---\n")
+            for i in range(sensor_count):
+                if sensor_cals[i]:
+                    sensor_num = num1 if i == 0 else num2
+                    log_file.write(f"Sensor {i+1} (Zone {zone}, Number {sensor_num}):\n")
+                    for cal_type, params in sensor_cals[i]._cal_data.items():
+                        log_file.write(f"  - {cal_type} Calibration:\n")
+                        slope = round(params['slope'], 4)
+                        constant = round(params['const'], 4)
+ 
+                        # Default length of 1.0012 is on left 1
+                        l1 = len(str(slope).split(".")[0]) - 1
+                        l2 = len(str(constant).split(".")[0]) - 1
+                       
+                        log_file.write(f"      - Slope:    {' ' * (l2 - l1)}{slope}\n")
+                        log_file.write(f"      - Constant: {' ' * (l1 - l2)}{constant}\n")
+                        log_file.write(f"      - cal_id: {params['cal_id']}\n")
+                    log_file.write("\n")
+        
+        log_file.write("--- Summary ---\n")
+        log_file.write(f"Log Directory: {log_dir}\n")
+        log_file.write(f"Calibration Directory: {os.path.join(log_dir, 'cal')}\n\n")
+        log_file.write("--- Notes ---\n")
+        if has_calibration:
+            log_file.write("- Calibration values applied to logged data.\n")
+            log_file.write("- Relative Humidity values clamped between 0% and 100%.\n")
+            log_file.write("- If calibration was unavailable for a sensor, raw values were used.\n")
+        else:
+            log_file.write("- No calibration data was applied; raw sensor values were logged.\n")
+        log_file.write("- Data stored in CSV format with timestamps.\n\n")
+        log_file.write("=== End of Log ===\n")
 
-def create_graph_1(xs: np.array, ys: np.array,
-                   xlabel: str, ylabel: str, full_path: str):
 
+# ------------------------------
+# GRAPHING FUNCTIONS (unchanged)
+# ------------------------------
+def create_graph_1(xs: np.array, ys: np.array, xlabel: str, ylabel: str, full_path: str):
     fig = plt.figure()
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -404,10 +454,8 @@ def create_graph_1(xs: np.array, ys: np.array,
     plt.close(fig)
 
 
-def create_graph_2(xs: np.array, ys1: np.array, ys2: np.array,
-                   legend1: str, legend2: str,
+def create_graph_2(xs: np.array, ys1: np.array, ys2: np.array, legend1: str, legend2: str,
                    xlabel: str, ylabel: str, full_path: str):
-
     fig = plt.figure()
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -431,12 +479,9 @@ def create_graph_2(xs: np.array, ys1: np.array, ys2: np.array,
 
 
 def create_graph_combo(xs: np.array, ys1: np.array, ys2: np.array,
-                       legend1: str, legend2: str,
-                       xlabel: str,
-                       ylabel1: str, ylabel2: str,
-                       color1: str, color2: str,
+                       legend1: str, legend2: str, xlabel: str,
+                       ylabel1: str, ylabel2: str, color1: str, color2: str,
                        full_path: str):
-
     fig, ax1 = plt.subplots()
     plt.xlabel(xlabel)
     ax1.set_ylabel(ylabel1)
@@ -467,27 +512,84 @@ def create_graph_combo(xs: np.array, ys1: np.array, ys2: np.array,
     plt.close(fig)
 
 
+def plot_calibration_graphs():
+    """
+    Generates calibration plots if calibration data is available.
+    """
+    print("Generating calibration plots...")
+    cal_dir = os.path.join(base_dir if base_dir else os.getcwd(),"cal")
+    if not os.path.exists(cal_dir):
+        os.makedirs(cal_dir)
+    
+    base_path = os.path.join(os.getcwd(), cal_dir)
+    prefix = f"{log.dt_part}-" if log.ts_prefix else ""
+    
+    memdata_t = memdata.T
+    xs = memdata_t[1]  # time row
+    xs, unit = auto_scale(xs)
+    x_label = f"Time ({unit})"
+    
+    cal_indices = {}
+    raw_indices = {}
+    col_idx = 3 + sensor_count * 3  # Start after raw sensor data
+    
+    for i in range(sensor_count):
+        if sensor_cals[i]:
+            for meas in ["Temperature", "Relative Humidity", "Pressure"]:
+                if meas in sensor_cal_types[i]:
+                    cal_indices[(i, meas)] = col_idx
+                    col_idx += 1
+        raw_indices[(i, "Temperature")] = 3 + i * 3
+        raw_indices[(i, "Relative Humidity")] = 4 + i * 3
+        raw_indices[(i, "Pressure")] = 5 + i * 3
+    
+    for (i, meas), cal_idx in cal_indices.items():
+        filename = f"fig-cal-{meas.lower().replace(' ', '-')}{i+1}.png"
+        create_graph_1(
+            xs, memdata_t[cal_idx],
+            x_label, f"{meas} (°C)",
+            os.path.join(base_path, prefix + filename)
+        )
+    
+    for (i, meas), cal_idx in cal_indices.items():
+        raw_idx = raw_indices.get((i, meas))
+        if raw_idx is not None:
+            filename = f"fig-cal-compare-{meas.lower().replace(' ', '-')}{i+1}.png"
+            create_graph_2(
+                xs, memdata_t[cal_idx], memdata_t[raw_idx],
+                f"{meas} Calibrated", f"{meas} Raw",
+                x_label, f"{meas} (°C)",
+                os.path.join(base_path, prefix + filename)
+            )
+    
+    if sensor_count == 2 and all(sensor_cals):
+        for meas in ["Temperature", "Relative Humidity", "Pressure"]:
+            if (0, meas) in cal_indices and (1, meas) in cal_indices:
+                filename = f"fig-cal-pair-{meas.lower().replace(' ', '-')}.png"
+                create_graph_2(
+                    xs, memdata_t[cal_indices[(0, meas)]], memdata_t[cal_indices[(1, meas)]],
+                    f"{meas} Sensor 1", f"{meas} Sensor 2",
+                    x_label, f"{meas} (°C)",
+                    os.path.join(base_path, prefix + filename)
+                )
+
+
 # ------------------------------
 # SIGNAL HANDLER
 # ------------------------------
-
 def SignalHandler_SIGINT(SignalNumber, Frame):
-    """
-    Handle Ctrl+C to exit gracefully, generate final figures, etc.
-    """
-    global disable_halt
-    global relay_fail
-    global memdata
-    global log
-    global sensor_count
-
+    global disable_halt, relay_fail, memdata, log, sensor_count, is_plot_calibration
+    global sensor_cals
+    global start
+    global zone, num1, num2
+    
     if disable_halt:
         return
-
+    
+    disable_halt=True
     print('\nTermination requested.')
     if is_simulation:
-        global thr
-        global stop_threads
+        global thr, stop_threads
         stop_threads = True
         thr.join()
         sleep(0.1)
@@ -505,6 +607,9 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
     base_path = log.dir_path
     prefix = f"{log.dt_part}-" if log.ts_prefix else ""
 
+    end_time = datetime.now()
+    write_calibration_log(tstart, end_time, interval, sensor_cals, sensor_count, log.dir_path, zone, num1, num2)
+
     if True in [is_basic_figures, is_combo_figures]:
         print("\nGenerating figures:")
 
@@ -519,13 +624,8 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
     #   - If sensor 1 is also calibrated => next column after that
     #
 
-    # figure out which row we want for humidity:
-    #  either raw or calibration, depending on rh_cal[i]
-
-    rh_indexes = get_rh_indexes(memdata_t, sensor_count, rh_cal)
-    rh_labels  = get_rh_labels(sensor_count, rh_cal)
-
     t_indexes = [(3 + i * 3) for i in range(sensor_count)]
+    rh_indexes = [(3 + i * 3 + 1) for i in range(sensor_count)]
     p_indexes = [(3 + i * 3 + 2) for i in range(sensor_count)]
 
     # ------------------------------
@@ -543,7 +643,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
             # Humidity (raw or cal)
             create_graph_1(
                 xs, memdata_t[rh_indexes[i]],
-                x_label, rh_labels[i],
+                x_label, f"Relative Humidity {i+1} (RH%)",
                 f"{base_path}{prefix}fig{i+1}-single-h.png"
             )
             # Pressure
@@ -571,7 +671,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         rh_diff21 = memdata_t[rh_indexes[1]] - memdata_t[rh_indexes[0]]
         create_graph_1(
             xs, rh_diff21,
-            x_label, f"{rh_labels[1]} - {rh_labels[0]}",
+            x_label, "RH2% - RH1%",
             f"{base_path}{prefix}fig-diff-rh21.png"
         )
 
@@ -596,8 +696,8 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_2(
             xs,
             memdata_t[rh_indexes[0]], memdata_t[rh_indexes[1]],
-            rh_labels[0], rh_labels[1],
-            x_label, "RH% (%)",
+            "RH1%", "RH2%",
+            x_label, "Relative Humidity (%)",
             f"{base_path}{prefix}fig-pair-rh12.png"
         )
         # Pair p
@@ -613,7 +713,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_combo(
             xs,
             memdata_t[t_indexes[0]], memdata_t[rh_indexes[0]],
-            "t1", rh_labels[0],
+            "T1", "RH1%",
             x_label,
             "Temperature (°C)", "RH% (%)",
             "r", "b",
@@ -622,228 +722,145 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_combo(
             xs,
             memdata_t[t_indexes[1]], memdata_t[rh_indexes[1]],
-            "t2", rh_labels[1],
+            "T2", "RH2%",
             x_label,
             "Temperature (°C)", "RH% (%)",
             "r", "b",
             f"{base_path}{prefix}fig2-combo-trh.png"
         )
 
+    if is_plot_calibration and any(sensor_cals):
+        plot_calibration_graphs()
+
     exit(0)
 
 
 # ------------------------------
-# GRAPHING SUPPORT FOR (CAL vs RAW) HUMIDITY
+# CALIBRATION-ENABLED HEADER & DATA FUNCTIONS
 # ------------------------------
-
-def get_rh_indexes(memdata_t: np.ndarray, sensor_count: int, rh_cal_list: list):
+def print_screen_header(sensor_count, sensor_cal_types):
     """
-    Returns a list of row indices in 'memdata_t' (transposed) for 
-    the humidity data of each sensor. If sensor i is calibrated (rh_cal_list[i] != None),
-    we pick the calibration column; otherwise, we pick the raw humidity column.
-    
-    Layout in transposed array (rows):
-      row 0 => DateTime
-      row 1 => run time
-      row 2 => measurement count
-      row 3 => sensor 1 temp
-      row 4 => sensor 1 hum
-      row 5 => sensor 1 pres
-      row 6 => sensor 2 temp
-      row 7 => sensor 2 hum
-      row 8 => sensor 2 pres
-      ...
-      row (3 + i*3 + 1) => sensor i's raw humidity
-    Then after all raw columns, calibration columns for each sensor that has calibration
-    in the order that they appear.
+    Prints a one-line header for screen output.
+    For each sensor, prints three columns: Temperature, Relative Humidity, and Pressure.
+    For each measurement, if calibration exists for that type, use the calibrated header label,
+    otherwise use the raw value header label.
     """
-
-    # base index for raw data (T/H/P) => first sensor T is row 3
-    raw_start = 3
-    # total raw columns => sensor_count * 3
-    cal_base = raw_start + sensor_count * 3
-
-    # We'll figure out how many calibration columns we've used so far
-    # to find the correct offset.
-    rh_rows = [None] * sensor_count
-    cal_count_used = 0
-
+    header = ["Datetime", "Timestamp", "Time (s)", "Measurement"]
     for i in range(sensor_count):
-        if rh_cal_list[i] is not None:
-            # has calibration => offset from cal_base
-            rh_rows[i] = cal_base + cal_count_used
-            cal_count_used += 1
+        n = i + 1
+        # Temperature
+        if "Temperature" in sensor_cal_types[i]:
+            header.append(f"Tcal{n} (°C)")
         else:
-            # raw humidity => raw_start + i*3 + 1
-            rh_rows[i] = raw_start + i * 3 + 1
+            header.append(f"t{n} (°C)")
+        # Relative Humidity
+        if "Relative Humidity" in sensor_cal_types[i]:
+            header.append(f"RHcal{n}% (%)")
+        else:
+            header.append(f"RH{n}% (%)")
+        # Pressure
+        if "Pressure" in sensor_cal_types[i]:
+            header.append(f"Pcal{n} (hPa)")
+        else:
+            header.append(f"p{n} (hPa)")
+    print(", ".join(header))
 
-    return rh_rows
 
-
-def get_rh_labels(sensor_count: int, rh_cal_list: list):
+def print_header_with_calibrations(sensor_count, sensor_cals, sensor_cal_types, log):
     """
-    Returns a list of label strings for each sensor's humidity:
-      either "RHcal{i}%" if calibrated, or "RH{i}%".
+    Builds and writes the CSV header row for the log file.
+    The file header consists of raw sensor columns first and then, for sensors that have calibration,
+    additional columns are appended.
     """
-    labels = []
+    file_header = ["Datetime", "Timestamp", "Time (s)", "Measurement"]
+    
+    # Raw sensor columns for each sensor:
     for i in range(sensor_count):
-        if rh_cal_list[i] is not None:
-            labels.append(f"RHcal{i+1}% (%)")
-        else:
-            labels.append(f"RH{i+1}% (%)")
-    return labels
-
-
-# ------------------------------
-# DATA LOGGING / STORAGE HELPERS
-# ------------------------------
-
-def read_and_calibrate_sensor_data(
-    address,
-    relay_obj,
-    sensor_index,
-    rh_cal_list,
-    trials,
-    delay,
-    is_relays,
-    is_simulation,
-    errors,
-    count
-):
-    """
-    Attempts to read from one BME280 sensor. If reading fails, tries rebooting
-    up to 'trials' times. If calibration is present for sensor_index, applies it
-    to the RH value.
-
-    Returns:
-      (success_flag, temperature, humidity, pressure, calibrated_hum, updated_errors)
-    """
+        n = i + 1
+        file_header.extend([f"t{n} (°C)", f"RH{n}% (%)", f"p{n} (hPa)"])
     
-    global error_log
+    # Then add calibration columns for sensors that have calibration data:
+    for i in range(sensor_count):
+        n = i + 1
+        if sensor_cal_types[i]:
+            for meas in ["Temperature", "Relative Humidity", "Pressure"]:
+                if meas in sensor_cal_types[i]:
+                    if meas == "Temperature":
+                        file_header.append(f"Tcal{n} (°C)")
+                    elif meas == "Relative Humidity":
+                        file_header.append(f"RHcal{n}% (%)")
+                    elif meas == "Pressure":
+                        file_header.append(f"Pcal{n} (hPa)")
     
-    i = 0
-    while True:
-        try:
-            t_, p_, h_ = readBME280All(address)  # (temp °C, pressure hPa, humidity %)
-            # If calibration is available
-            if rh_cal_list[sensor_index]:
-                h_cal = rh_cal_list[sensor_index].get_calibrated_value(h_)
-                # Round inside here if you like, but we do final rounding in format_data
-            else:
-                h_cal = None
-            return True, t_, h_, p_, h_cal, errors
-
-        except:
-            if i < trials and is_relays:
-                # Attempt sensor reboot
-                terr = datetime.now().timestamp()
-                if errors == 0:
-                    # first error => create error log object
-                    error_log = ErrorLog(
-                        log.dir_path, "sensor_failures", "log", log.dt_part, log.ts_prefix
-                    )
-                msg = f"Unable to read sensor {hex(address)}. Reboot {i+1}/{trials}"
-                if error_log:
-                    error_log.write(terr, count, msg)
-                print(msg)
-                # Turn off sensor
-                relay_obj.all_open()
-                sleep(delay)
-                # Turn on sensor
-                if is_simulation:
-                    relay_fail.all_close()
-                relay_obj.all_close()
-                errors += 1
-                i += 1
-                sleep(delay)
-            else:
-                # fail
-                return False, np.nan, np.nan, np.nan, None, errors
+    log.write(file_header)
 
 
-def build_and_store_row(
-    memdata,
-    count,
-    t,
-    tp0,
-    sensor_values,
-    sensor_cals,
-    log,
-    is_nan_logging,
-    max_rows
-):
+def build_and_store_row(memdata, count, t, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows):
     """
-    Builds a row of data (time, sensor readings, calibrations),
-    appends it to 'memdata', and writes to log if not all NaN (unless is_nan_logging=True).
-
-    sensor_values: [temp1, hum1, pres1, temp2, hum2, pres2, ...]
-    sensor_cals:   [humCal1, humCal2, ...] (None if no calibration)
+    Builds a row: time info, raw sensor values, and then calibration values (if available)
+    appended in the order determined by sensor_cal_types.
     """
-    # If all sensor_values are NaN and we do NOT want to log them => skip
     if (np.isnan(sensor_values).all()) and (not is_nan_logging):
         return memdata
-
-    # Time
     tp_cur = perf_counter()
-    row = [
-        t.timestamp(),         # absolute wallclock in float
-        (tp_cur - tp0),       # run time in seconds
-        count
-    ]
-
-    # Add sensor raw data
+    row = [t.timestamp(), (tp_cur - tp0), count]
     row.extend(sensor_values)
-    # Add calibrations
-    for h_cal in sensor_cals:
-        if h_cal is None:
-            row.append(np.nan)
-        else:
-            row.append(h_cal)
+    for i in range(len(cal_readings)):
+        for meas in ["Temperature", "Relative Humidity", "Pressure"]:
+            if meas in sensor_cal_types[i]:
+                val = cal_readings[i].get(meas, np.nan)
+                row.append(val)
 
-    # Append to memdata
     if count == 1:
         memdata = np.array(row)
     else:
         memdata = np.vstack([memdata, row])
-
-    # Data retention
     if len(memdata) > max_rows:
         memdata = memdata[1:, :]
-
-    # Write row to log file
-    # We place raw data + calibration into a single array for logging
     combined = np.array(sensor_values, dtype=float)
-    for h_cal in sensor_cals:
-        combined = np.append(combined, h_cal if h_cal is not None else np.nan)
-
+    for i in range(len(cal_readings)):
+        for meas in ["Temperature", "Relative Humidity", "Pressure"]:
+            if meas in sensor_cal_types[i]:
+                combined = np.append(combined, cal_readings[i].get(meas, np.nan))
     time_dict["timestamp"] = t
     time_dict["time"] = tp_cur - tp0
     time_dict["N"] = count
-
     out_line = format_data(time_dict, combined)
     log.write(out_line)
-
     return memdata
 
 
-def print_data_line_to_screen(t, tp0, count, sensor_values, sensor_cals):
+def print_data_line_to_screen(t, tp0, count, sensor_values, cal_readings, sensor_cal_types):
     """
-    Prints a shortened line of data to screen. If a sensor is calibrated, 
-    that humidity is displayed instead of raw. 
+    For each sensor, always print three values: Temperature, Relative Humidity, and Pressure.
+    If calibration exists for a type, use the calibrated value; otherwise, use the raw value.
     """
-    # We'll build a partial array: [temp1, humOrCal1, p1, temp2, humOrCal2, p2, ...]
     out_vals = []
-    for i in range(0, len(sensor_values), 3):
-        t_ = sensor_values[i]
-        h_ = sensor_values[i+1]
-        p_ = sensor_values[i+2]
-        s_idx = i // 3
-        if sensor_cals[s_idx] is not None:
-            # override the raw humidity
-            h_ = sensor_cals[s_idx]
-        out_vals.extend([t_, h_, p_])
-
-    # Format
+    sensors = len(sensor_values) // 3
+    for sensor_index in range(sensors):
+        # Get raw values:
+        t_raw = sensor_values[sensor_index*3]
+        h_raw = sensor_values[sensor_index*3 + 1]
+        p_raw = sensor_values[sensor_index*3 + 2]
+        
+        # Temperature:
+        if sensor_cal_types[sensor_index] and "Temperature" in sensor_cal_types[sensor_index]:
+            t_val = cal_readings[sensor_index].get("Temperature", t_raw)
+        else:
+            t_val = t_raw
+        # Relative Humidity:
+        if sensor_cal_types[sensor_index] and "Relative Humidity" in sensor_cal_types[sensor_index]:
+            h_val = cal_readings[sensor_index].get("Relative Humidity", h_raw)
+        else:
+            h_val = h_raw
+        # Pressure:
+        if sensor_cal_types[sensor_index] and "Pressure" in sensor_cal_types[sensor_index]:
+            p_val = cal_readings[sensor_index].get("Pressure", p_raw)
+        else:
+            p_val = p_raw
+        
+        out_vals.extend([t_val, h_val, p_val])
+    
     arr = np.array(out_vals, dtype=float)
     time_dict["timestamp"] = t
     time_dict["time"] = perf_counter() - tp0
@@ -855,19 +872,69 @@ def print_data_line_to_screen(t, tp0, count, sensor_values, sensor_cals):
 
 
 # ------------------------------
+# DATA LOGGING / SENSOR READING
+# ------------------------------
+def read_and_calibrate_sensor_data(address, relay_obj, sensor_index, sensor_cals, trials, delay, is_relays, is_simulation, errors, count):
+    """
+    Attempts to read from one BME280 sensor. If reading fails, tries rebooting
+    up to 'trials' times.
+    Returns: (success, t, h, p, cal_dict, errors)
+    cal_dict is a dictionary with keys "Temperature", "Relative Humidity", "Pressure"
+    for calibrated values. Calibration is applied only if a given type is available.
+    """
+    i = 0
+    while True:
+        try:
+            t_, p_, h_ = readBME280All(address)  # (temp °C, pressure hPa, humidity %)
+            cal_dict = {}
+            if sensor_cals[sensor_index]:
+                # Only attempt calibration if the calibration type is available
+                if "Temperature" in sensor_cals[sensor_index]._cal_data:
+                    t_cal = sensor_cals[sensor_index].get_calibrated_value(t_, "Temperature")
+                    cal_dict["Temperature"] = t_cal
+                if "Relative Humidity" in sensor_cals[sensor_index]._cal_data:
+                    h_cal = sensor_cals[sensor_index].get_calibrated_value(h_, "Relative Humidity")
+                    cal_dict["Relative Humidity"] = h_cal
+                if "Pressure" in sensor_cals[sensor_index]._cal_data:
+                    p_cal = sensor_cals[sensor_index].get_calibrated_value(p_, "Pressure")
+                    cal_dict["Pressure"] = p_cal
+            return True, t_, h_, p_, cal_dict, errors
+        except Exception as e:
+            if i < trials and is_relays:
+                terr = datetime.now().timestamp()
+                if errors == 0:
+                    error_log = ErrorLog(log.dir_path, "sensor_failures", "log", log.dt_part, log.ts_prefix)
+                msg = f"Unable to read sensor {hex(address)}. Reboot {i+1}/{trials}"
+                if error_log:
+                    error_log.write(terr, count, msg)
+                print(msg)
+                relay_obj.all_open()
+                sleep(delay)
+                if is_simulation:
+                    relay_fail.all_close()
+                relay_obj.all_close()
+                errors += 1
+                i += 1
+                sleep(delay)
+            else:
+                return False, np.nan, np.nan, np.nan, {}, errors
+
+
+def build_and_store_row_wrapper(memdata, count, t, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows):
+    return build_and_store_row(memdata, count, t, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows)
+
+
+def print_data_line_to_screen_wrapper(t, tp0, count, sensor_values, cal_readings, sensor_cal_types):
+    print_data_line_to_screen(t, tp0, count, sensor_values, cal_readings, sensor_cal_types)
+
+
+# ------------------------------
 # MAIN
 # ------------------------------
-
 def main():
-    global memdata
-    global sensor_count
-    global log
-    global decimals
-    global relay_fail
-    global stop_threads
-    global thr
-    global disable_halt
-    global is_combo_figures
+    global memdata, sensor_count, log, relay_fail, stop_threads, thr, disable_halt, is_combo_figures, sensor_cal_types
+    global tstart
+    global zone, num1, num2
 
     print(f"BME280 data logger v. {version} - Kim Miikki 2024\n")
 
@@ -932,7 +999,7 @@ def main():
 
     display_info()
 
-    # 6) Ctrl+C => signal handler
+    # 6) Setup Ctrl+C handling
     signal.signal(signal.SIGINT, SignalHandler_SIGINT)
 
     # 7) Compute max_rows for data retention
@@ -940,20 +1007,8 @@ def main():
     if max_rows_calc > rows_limit:
         max_rows_calc = rows_limit
         new_retention = max_rows_calc * interval / (24 * 3600)
-        print("Retention time was too large => adjusted to "
-              f"{new_retention:.2f} days\n")
-
+        print("Retention time was too large => adjusted to " f"{new_retention:.2f} days\n")
     max_rows = max_rows_calc
-
-    # 8) Wait until next full second
-    while get_sec_fractions() != 0:
-        pass
-
-    # 9) Start logging
-    tp0 = perf_counter()
-    tstart = datetime.now().timestamp()
-    # create DataLog object
-    log = DataLog(tstart, base_dir, "thp", "csv", is_subdir, is_prefix)
 
     if is_simulation:
         thr.start()
@@ -962,32 +1017,52 @@ def main():
     errors = 0
     disable_halt = True
 
-    # 10) For the "1 hour after 5 fails" logic
+    # 8) For the "1 hour after 5 fails" logic
+    # Initialize cooldown arrays
     consecutive_failures = [0] * sensor_count
     cooldown_until = [0] * sensor_count
 
-    # --- Print CSV header (once) ---
-    print_header_with_calibration(sensor_count, rh_cal, log)
+    # Compute per-sensor available calibration types
+    sensor_cal_types = []
+    for i in range(sensor_count):
+        if sensor_cals[i] is not None:
+            available = []
+            for meas in ["Temperature", "Relative Humidity", "Pressure"]:
+                if meas in sensor_cals[i]._cal_data:
+                    available.append(meas)
+            sensor_cal_types.append(available)
+        else:
+            sensor_cal_types.append([])
 
+    # 9) Wait until next full second
+    print("Synchronizing time.")
+    while get_sec_fractions(4) != 0:
+        pass
+
+    # 10) Start logging
+    tp0 = perf_counter()
+    tstart = datetime.now().timestamp()
+
+    # create DataLog object
+    log = DataLog(tstart, base_dir, "thp", "csv", is_subdir, is_prefix)
+
+    # Print CSV header (with calibration columns if available)
+    print_screen_header(sensor_count, sensor_cal_types)
+    print_header_with_calibrations(sensor_count, sensor_cals, sensor_cal_types, log)
+    
     # MAIN LOOP
     while True:
+        disable_halt = True
         t_now = datetime.now()
-        # tp_cur = perf_counter()
-
-        sensor_values = []
-        sensor_cals   = []
+        sensor_values = []   # Raw sensor values: for each sensor, [temp, hum, pres]
+        cal_readings = []    # For each sensor, a dict with calibrated values
         sensor_ok = [False] * sensor_count
-
-        # Loop sensors
         for s_idx, address in enumerate(sensors_list):
             now_time = time.time()
-
-            # Check if sensor is in cooldown
             if now_time < cooldown_until[s_idx]:
                 # skip reading => store NaNs
                 sensor_values.extend([np.nan, np.nan, np.nan])
-                sensor_cals.append(None)
-                # Also ensure the relay is open => powered off
+                cal_readings.append({})
                 r.ch_open(s_idx + 1)
                 continue
             else:
@@ -996,14 +1071,13 @@ def main():
                 if consecutive_failures[s_idx] >= 5:
                     consecutive_failures[s_idx] = 0
                 # close (power on) this sensor
-                r.ch_close(s_idx + 1)           
-
+                r.ch_close(s_idx + 1)
             # read sensor
-            success, t_, h_, p_, h_cal, errors = read_and_calibrate_sensor_data(
+            success, t_, h_, p_, cal_dict, errors = read_and_calibrate_sensor_data(
                 address=address,
                 relay_obj=r,
                 sensor_index=s_idx,
-                rh_cal_list=rh_cal,
+                sensor_cals=sensor_cals,
                 trials=trials,
                 delay=delay,
                 is_relays=is_relays,
@@ -1012,8 +1086,7 @@ def main():
                 count=count
             )
             sensor_values.extend([t_, h_, p_])
-            sensor_cals.append(h_cal)
-
+            cal_readings.append(cal_dict)
             if success:
                 sensor_ok[s_idx] = True
                 consecutive_failures[s_idx] = 0
@@ -1024,34 +1097,16 @@ def main():
                     # 1 hour cooldown
                     cooldown_until[s_idx] = now_time + COOLDOWN_DURATION
                     r.ch_open(s_idx + 1)
-                    print(
-                        f"Sensor {hex(address)} => 5 consecutive fails. "
-                        f"Cooldown until {datetime.fromtimestamp(cooldown_until[s_idx])}."
-                    )
-
-        # If all sensors work, reset everything
+                    print(f"Sensor {hex(address)} => 5 consecutive fails. Cooldown until {datetime.fromtimestamp(cooldown_until[s_idx])}.")
         if all(sensor_ok):
             for si in range(sensor_count):
                 consecutive_failures[si] = 0
                 cooldown_until[si] = 0
-
-        # Store row + log
-        memdata = build_and_store_row(
-            memdata=memdata,
-            count=count,
-            t=t_now,
-            tp0=tp0,
-            sensor_values=sensor_values,
-            sensor_cals=sensor_cals,
-            log=log,
-            is_nan_logging=is_nan_logging,
-            max_rows=max_rows
-        )
+        memdata = build_and_store_row(memdata, count, t_now, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows)
 
         # Print to screen if we haven't suppressed
-        disable_halt = True
         if not (np.isnan(sensor_values).all() and not is_nan_logging):
-            print_data_line_to_screen(t_now, tp0, count, sensor_values, sensor_cals)
+            print_data_line_to_screen(t_now, tp0, count, sensor_values, cal_readings, sensor_cal_types)
         disable_halt = False
 
         # Wait for next interval
@@ -1060,46 +1115,6 @@ def main():
         if wait_time > 0:
             sleep(wait_time)
         count += 1
-
-
-def print_header_with_calibration(sensor_count, rh_cal, log):
-    """
-    Prints and logs the CSV header row, taking into account that if 
-    sensor i is calibrated, we will have an extra column at the end for it.
-    """
-    # Screen header
-    screen_header = ["Datetime", "Timestamp", "Time (s)", "Measurement"]
-    for i in range(sensor_count):
-        n = i + 1
-        # We'll show e.g. t1, RHcal1, p1 if calibration is present
-        if rh_cal[i] is not None:
-            screen_header.append(f"t{n} (°C)")
-            screen_header.append(f"RHcal{n}% (%)")
-            screen_header.append(f"p{n} (hPa)")
-        else:
-            screen_header.append(f"t{n} (°C)")
-            screen_header.append(f"RH{n}% (%)")
-            screen_header.append(f"p{n} (hPa)")
-
-    out_screen = ", ".join(screen_header)
-    # Shorten second column for screen
-    out_screen = re.sub(r",[^,]*,", ",", out_screen, count=1)
-    print(out_screen)
-
-    # File header -> raw T/H/P for each sensor, then appended calibration columns
-    file_header = ["Datetime", "Timestamp", "Time (s)", "Measurement"]
-    for i in range(sensor_count):
-        n = i + 1
-        file_header.append(f"t{n} (°C)")
-        file_header.append(f"RH{n}% (%)")
-        file_header.append(f"p{n} (hPa)")
-
-    # Then columns for calibrations
-    for i in range(sensor_count):
-        if rh_cal[i] is not None:
-            file_header.append(f"RHcal{i+1}% (%)")
-
-    log.write(file_header)
 
 
 # ------------------------------
