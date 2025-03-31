@@ -128,7 +128,7 @@ disable_halt = False
 # Data logging start time
 tstart = 0
 
-# Initialize sensor varaibles
+# Initialize sensor variables
 zone = ""
 num1 = -1
 num2 = -1
@@ -795,15 +795,14 @@ def print_header_with_calibrations(sensor_count, sensor_cals, sensor_cal_types, 
     log.write(file_header)
 
 
-def build_and_store_row(memdata, count, t, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows):
+def build_and_store_row(memdata, count, t, secs, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows):
     """
     Builds a row: time info, raw sensor values, and then calibration values (if available)
     appended in the order determined by sensor_cal_types.
     """
     if (np.isnan(sensor_values).all()) and (not is_nan_logging):
         return memdata
-    tp_cur = perf_counter()
-    row = [t.timestamp(), (tp_cur - tp0), count]
+    row = [t.timestamp(), secs, count]
     row.extend(sensor_values)
     for i in range(len(cal_readings)):
         for meas in ["Temperature", "Relative Humidity", "Pressure"]:
@@ -823,14 +822,14 @@ def build_and_store_row(memdata, count, t, tp0, sensor_values, cal_readings, sen
             if meas in sensor_cal_types[i]:
                 combined = np.append(combined, cal_readings[i].get(meas, np.nan))
     time_dict["timestamp"] = t
-    time_dict["time"] = tp_cur - tp0
+    time_dict["time"] = secs
     time_dict["N"] = count
     out_line = format_data(time_dict, combined)
     log.write(out_line)
     return memdata
 
 
-def print_data_line_to_screen(t, tp0, count, sensor_values, cal_readings, sensor_cal_types):
+def print_data_line_to_screen(t, secs, count, sensor_values, cal_readings, sensor_cal_types):
     """
     For each sensor, always print three values: Temperature, Relative Humidity, and Pressure.
     If calibration exists for a type, use the calibrated value; otherwise, use the raw value.
@@ -863,7 +862,7 @@ def print_data_line_to_screen(t, tp0, count, sensor_values, cal_readings, sensor
     
     arr = np.array(out_vals, dtype=float)
     time_dict["timestamp"] = t
-    time_dict["time"] = perf_counter() - tp0
+    time_dict["time"] = secs
     time_dict["N"] = count
     line = format_data(time_dict, arr)
     # For screen brevity, replace the decimal portion of the second column:
@@ -882,6 +881,9 @@ def read_and_calibrate_sensor_data(address, relay_obj, sensor_index, sensor_cals
     cal_dict is a dictionary with keys "Temperature", "Relative Humidity", "Pressure"
     for calibrated values. Calibration is applied only if a given type is available.
     """
+    
+    global error_log
+    
     i = 0
     while True:
         try:
@@ -918,14 +920,6 @@ def read_and_calibrate_sensor_data(address, relay_obj, sensor_index, sensor_cals
                 sleep(delay)
             else:
                 return False, np.nan, np.nan, np.nan, {}, errors
-
-
-def build_and_store_row_wrapper(memdata, count, t, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows):
-    return build_and_store_row(memdata, count, t, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows)
-
-
-def print_data_line_to_screen_wrapper(t, tp0, count, sensor_values, cal_readings, sensor_cal_types):
-    print_data_line_to_screen(t, tp0, count, sensor_values, cal_readings, sensor_cal_types)
 
 
 # ------------------------------
@@ -1053,6 +1047,7 @@ def main():
     # MAIN LOOP
     while True:
         disable_halt = True
+        tp_now = perf_counter()
         t_now = datetime.now()
         sensor_values = []   # Raw sensor values: for each sensor, [temp, hum, pres]
         cal_readings = []    # For each sensor, a dict with calibrated values
@@ -1102,11 +1097,13 @@ def main():
             for si in range(sensor_count):
                 consecutive_failures[si] = 0
                 cooldown_until[si] = 0
-        memdata = build_and_store_row(memdata, count, t_now, tp0, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows)
+        secs = tp_now - tp0
+        memdata = build_and_store_row(memdata, count, t_now, secs, sensor_values, cal_readings, sensor_cal_types, log, is_nan_logging, max_rows)
 
         # Print to screen if we haven't suppressed
         if not (np.isnan(sensor_values).all() and not is_nan_logging):
-            print_data_line_to_screen(t_now, tp0, count, sensor_values, cal_readings, sensor_cal_types)
+            
+            print_data_line_to_screen(t_now, secs, count, sensor_values, cal_readings, sensor_cal_types)
         disable_halt = False
 
         # Wait for next interval
