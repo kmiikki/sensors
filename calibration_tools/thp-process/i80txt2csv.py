@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import re
 import sys
 import csv
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,12 @@ def convert_log_to_csv(log_file):
     output_dir = os.getcwd()
 
     # Extract the date and time part from the input file name to create the output file name
-    base_name = os.path.basename(log_file).replace('+0200.txt', '')
+    log_file_name = os.path.basename(log_file)
+    
+    # Use regex to replace either '+0300.txt' or '+0200.txt' with an empty string
+    base_name = re.sub(r'\+\d{4}\.txt$', '', log_file_name)
+    
+    # Replace spaces with underscores and create the output file name
     output_file_name = f"i80_{base_name.replace(' ', '_')}.csv"
     output_file_path = os.path.join(output_dir, output_file_name)
     

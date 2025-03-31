@@ -11,7 +11,7 @@ import argparse
 
 def read_and_process_files(file1, file2, offset=0):
     # Read the first log file
-    df1 = pd.read_csv(file1, encoding='unicode_escape')
+    df1 = pd.read_csv(file1, encoding='utf-8')
 
     # Strip leading and trailing spaces from the column names
     df1.columns = df1.columns.str.strip()
