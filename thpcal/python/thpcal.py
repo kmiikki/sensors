@@ -213,7 +213,7 @@ def update_computer_mac(cursor, mac, new_mac):
         UPDATE computers
         SET mac = ?
         WHERE mac =?
-    """, (mac, new_mac))
+    """, (new_mac, mac))
 
 
 # Function to get get all reference calibraton serial numbers
@@ -266,6 +266,18 @@ def get_latest_ref_calibration_date(cursor, ref_sn_id):
     """, (ref_sn_id,))
     result = cursor.fetchone()
     return result[0] if result else None
+
+
+# Function to get last reference calibration date
+def get_ref_calibration_dates(cursor, ref_sn_id):
+    cursor.execute("""
+        SELECT ref_calibration_date
+        FROM ref_calibration_dates
+        WHERE sn_id = ?
+        ORDER BY ref_calibration_date ASC
+    """, (ref_sn_id,))
+    dates = [row[0] for row in cursor.fetchall()]
+    return dates if dates else None
 
 
 # Function to add last reference calibraton date to the reference sensor
@@ -399,7 +411,7 @@ def get_nearest_ref_calibration_date(cursor, date_str):
 # Define functions for each operation
 
 
-# Display all sensors in a zone
+# Dsiplay all sensors in a zone
 def list_sensors_in_zone(cursor, choices):
     zone = choices["zone"]
     ref_sn = choices["ref_sn"]
@@ -621,7 +633,7 @@ def assign_computer_to_sensor(cursor, choices):
             print('No sesnors in zone.')
             return
         
-        choices['sn'] = sn
+        choices['sn'] =sn
 
     print(f"Assign computer to zone {zone}")
     print(f"------------------------{'-' * len(zone)}")
@@ -733,8 +745,6 @@ def select_zone(cursor, choices):
         if zone == choices['zone']:
             print('Zone already selected.')
             return
-        if zone == '0' and is_before_menu:
-            sys.exit(0)
         if zone == "0":
             return
         if zone in zones:
@@ -1183,7 +1193,7 @@ def parse_units(df):
                     failures += 1
             elif l1 > 0 and l2 > 0:
                 # P, T tests
-                if ref[0].upper() != sensor[0].upper():
+                if ref[0] != sensor[0]:
                     failures += 1
             
             # Test units
@@ -1518,7 +1528,7 @@ def select_sensor_calibrations(cursor, zone, sn):
     return result
 
 
-# Generate and save a calibration graph
+# Generate and asve a calibration graph
 def generate_calibration_graph(cursor, choices):
     zone = choices["zone"]
     sn = choices["sn"]
@@ -1584,9 +1594,9 @@ def generate_calibration_graph(cursor, choices):
     # Define labels
     x_label = unit_dict["name"]
     y_label = unit_dict["name_ref"]
-    if unit_dict["label"] in ["Temperature", "Pressure"]:
-        x_label += f" ({unit_dict['cal_unit']})"
-        y_label += f" ({unit_dict['cal_unit']})"
+    if unit_dict["label"] in ["Temperature, Pressure"]:
+        x_label += f" ({unit_dict['unit']}"
+        y_label += f" ({unit_dict['unit_ref']}"
     
     # Plotting
     plt.figure(figsize=(10, 6))
@@ -1602,8 +1612,8 @@ def generate_calibration_graph(cursor, choices):
     else:
         major_steps = 10
     plt.grid(which='major', color='black', linestyle='--', linewidth=0.5, alpha=0.7)
-    plt.xticks(np.arange(x_min, x_max + 1, major_steps))  # Major ticks every {major_steps}%
-    plt.yticks(np.arange(x_min, x_max + 1, major_steps))  # Major ticks every {major_steps}%
+    plt.xticks(np.arange(0, 101, major_steps))  # Major ticks every {major_steps}%
+    plt.yticks(np.arange(0, 101, major_steps))  # Major ticks every {major_steps}%
     
     if has_minor_grid:
         plt.grid(which='minor', color='gray', linestyle=':', linewidth=0.5, alpha=0.5)
@@ -1638,9 +1648,9 @@ def get_distinct_sensor_labels(cursor, zone, sn):
         label = labels[0]
     else:
         print("Select a calibration type from the list:")
-        i = 0
+        i = 1
         while i < len(labels):
-            print(f"{i+1}: {labels[i]}")
+            print(f"{i}: {labels[i-1]}")
             i += 1
         sel_min = 1
         sel_max = len(labels)
@@ -2215,7 +2225,7 @@ def change_computer_mac(cursor, choices):
             return
         
     mac = macs[number-1]
-    new_mac = input("New name: ")
+    new_mac = input("New MAC address: ")
     if not is_valid_mac(new_mac):
         print("Invalid MAC address.")
         return
@@ -2458,18 +2468,10 @@ def delete_calibration(cursor, choices):
 def list_ref_sensors(cursor, choices):
     print("Reference sensors:")
     cursor.execute("""
-		SELECT 
-			s.ref_name, 
-			s.serial_number, 
-			MAX(d.ref_calibration_date) AS last_cal_date
-		FROM ref_sensors s
-		LEFT JOIN ref_calibration_dates d 
-			ON s.serial_number = d.sn_id
-		GROUP BY 
-			s.ref_name, 
-			s.serial_number
-		ORDER BY 
-			s.ref_name ASC    
+        SELECT s.ref_name, s.serial_number, MAX(d.ref_calibration_date)
+        FROM ref_sensors s, ref_calibration_dates d
+        LEFT JOIN ref_calibration_dates ON s.serial_number = d.ref_cal_id
+        ORDER BY s.ref_name ASC
     """,)
     sensors = cursor.fetchall()
     if len(sensors) > 0:
