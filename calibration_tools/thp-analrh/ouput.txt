@@ -1,0 +1,63 @@
+$ thp-analrh.py -n -t 2
+THP R.H.% data analyzer - (C) Kim Miikki 2024
+
+Current directory:
+/home/kim/temp2
+
+Log file found: thp.csv
+
+Data info
+---------
+File        : thp.csv
+Directory   : /home/kim/temp2
+Sensors     : 2
+Data rows   : 139
+Time (s)    : 138.0
+Time (min)  : 2.3
+Target (min): 2
+Range (min) : 2
+Interval (s): 1.0
+
+Statistics
+----------
+Sensor     : 1
+Slope      : -0.0003 %/s
+Constant   : 46.08 %
+Time (min) : 2
+Delta R.H.%: -0.0317
+Trials     : 120
+Min        : 45.9
+Max        : 46.3
+Mean       : 46.061
+Median     : 46.03
+Method     : Normal distribution
+Alpha      : 0.95
+CI lower   : 46.0458
+CI upper   : 46.0767
+CI half    : 0.0154
+SEM        : 0.008
+
+R.H.%: 46.061±0.015
+R.H.%: [95% CI: 46.046-46.077]
+
+Statistics
+----------
+Sensor     : 2
+Slope      : -0.0009 %/s
+Constant   : 47.81 %
+Time (min) : 2
+Delta R.H.%: -0.104
+Trials     : 120
+Min        : 47.61
+Max        : 48.0
+Mean       : 47.737
+Median     : 47.69
+Method     : Normal distribution
+Alpha      : 0.95
+CI lower   : 47.7173
+CI upper   : 47.7573
+CI half    : 0.02
+SEM        : 0.01
+
+R.H.%: 47.737±0.020
+R.H.%: [95% CI: 47.717-47.757]
