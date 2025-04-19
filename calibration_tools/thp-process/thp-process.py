@@ -6,11 +6,22 @@ import sys
 import shutil
 import subprocess
 from pathlib import Path
+import re
+
 
 def print_usage():
     print("Usage: thp-process.py [<data_directory>]")
     print("Ensure the required files are present and named correctly.")
     sys.exit(1)
+
+
+def classify(name):
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', name):
+        return "date"
+    if re.fullmatch(r'\d{8}-\d{6}', name):
+        return "datetime"
+    return None
+
 
 def main():
     if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")):
@@ -24,14 +35,25 @@ def main():
     else:
         data_dir = Path.cwd()
 
+    # After you parse data_dir …
+    kind = classify(data_dir.name)
+    if kind in ("date", "datetime"):
+        # User pointed at one of the leaf dirs – go up one level
+        data_dir = data_dir.parent
+
     # Find the relevant directories
+    DATE_RE      = re.compile(r'^\d{4}-\d{2}-\d{2}$')      # 2025-04-17
+    DATETIME_RE  = re.compile(r'^\d{8}-\d{6}$')            # 20250417-092933
+    
     datetime_dir, ref_log_dir = None, None
     for subdir in data_dir.iterdir():
-        if subdir.is_dir():
-            if len(subdir.name.split('-')) == 3:  # Ref logging directory named like "2024-11-04"
-                ref_log_dir = subdir
-            else:  # Datetime directory named like "20241104-144640"
-                datetime_dir = subdir
+        if not subdir.is_dir():
+            continue
+        name = subdir.name
+        if DATE_RE.fullmatch(name):
+            ref_log_dir = subdir
+        elif DATETIME_RE.fullmatch(name):
+            datetime_dir = subdir
 
     if not datetime_dir or not ref_log_dir:
         print("Error: Required directories not found.")
@@ -54,6 +76,7 @@ def main():
 
     print(f"Reference TXT file: {ref_txt_file}")
     print(f"THP CSV file: {thp_csv_file}")
+
 
     # Create 'cal' directory
     cal_dir = data_dir / "cal"

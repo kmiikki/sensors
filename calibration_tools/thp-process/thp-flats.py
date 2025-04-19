@@ -276,11 +276,11 @@ def main():
     analysis_path = 'analysis'
     os.makedirs(analysis_path, exist_ok=True)
 
-    df = pd.read_csv(file_path, encoding='unicode_escape')
+    df = pd.read_csv(file_path)
 
     # Strip leading and trailing spaces from the column names
     df.columns = df.columns.str.strip()
-    df.columns = [col.encode('latin1').decode('utf-8') for col in df.columns]
+    #df.columns = [col.encode('latin1').decode('utf-8') for col in df.columns]
 
     # Determine if sensor 2 data is present
     has_sensor2 = 't2 (°C)' in df.columns and 'RH2% (%)' in df.columns and 'p2 (hPa)' in df.columns
