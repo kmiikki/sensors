@@ -104,11 +104,14 @@ def analyze_column(data, col_mean_rhref, col_mean, targets):
 
     for target in targets:
         # find row with col_mean closest to target
+        print(target)
         closest_row = data.iloc[(data[col_mean] - target).abs().argsort()[:1]].iloc[0]
         value = closest_row[col_mean]
         dist = abs(value - target)
         # skip if too far from target
-        if dist > 5:
+        if target < 80 and dist > 5:
+            continue
+        elif dist > 2.5:
             continue
         if closest_row['Rank'] not in seen_ranks:
             results.append((int(closest_row['Rank']),
@@ -278,7 +281,11 @@ def main():
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
     # 5) Original steps: analyze ranks
-    targets = list(range(0, 110, 10))
+    targets = list(range(0, 90, 10))
+    targets.append(85)
+    targets.append(90)
+    targets.append(95)
+    targets.append(100)
 
     # We'll keep these for plateau plotting:
     best_rh1_ranks = []
