@@ -4,6 +4,14 @@
 
 When handling text data on a Raspberry Pi or other Linux systems, you should ensure that your system’s locale is set to UTF-8 before logging or processing data. UTF-8 is a more modern and versatile character encoding than ISO-8859-1 (Latin-1). Many Python scripts (including some in this repository) require that data files are in UTF-8 format.
 
+While converting, the script also fixes a naming mistake in the *header line* that occasionally appends a percent sign ("%") to pressure sensor names.  Only these two very specific occurrences are corrected:
+
+* ``p1%`` → ``p1``
+* ``p2%`` → ``p2``
+
+No other percent signs in the file are touched.  The rest of the UTF‑8
+conversion logic is unchanged.
+
 ### Setting Locale to UTF-8 on Raspberry Pi OS (Bookworm)
 
 1. Open **Preferences** → **Raspberry Pi Configuration**.
