@@ -1,0 +1,8 @@
+2025-05-03T10:19:38
+/home/kim/python/20250502-rh-analysis/merged-20250407-114016.csv
+-th=0.01 *
+-start=0
+-window=180
+-interval=30
+-maxdiff=10
+-a=False

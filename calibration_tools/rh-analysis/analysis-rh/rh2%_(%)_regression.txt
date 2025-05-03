@@ -1,0 +1,10 @@
+Linear Regression Results:
+  Formula: y = 1.0889x + -2.5349
+
+  Slope:          1.0889
+  Intercept:      -2.5349
+  R-value:        0.9993
+  R-squared:      0.9985
+  Standard Error: 0.0147
+  P-value:        1.261e-12
+  N:              10
