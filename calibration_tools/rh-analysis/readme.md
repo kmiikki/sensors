@@ -42,7 +42,7 @@ The script searches for the newest `merged-*.csv` in:
 | `-s`  | `--start`    | 0       | First sample index to analyse                   |
 | `-w`  | `--window`   | 180     | Sliding‑window length (samples)                 |
 | `-i`  | `--interval` | 30      | Step between windows (samples)                  |
-| –     | `--maxdiff`  | 10      | Max allowed \|RHsensor – RHref\| (%%RH)         |
+| –     | `--maxdiff`  | 10      | Max allowed \|RHsensor – RHref\| (%RH)          |
 | `-a`  | `--auto`     | False   | Auto‑scale X‑axis units on plateau plots        |
 
 All parameters—**including defaults**—are echoed to `analysis-rh/thp-args.log`; overridden values are marked with `*`, enabling deterministic reruns.
