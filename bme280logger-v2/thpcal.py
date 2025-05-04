@@ -213,7 +213,7 @@ def update_computer_mac(cursor, mac, new_mac):
         UPDATE computers
         SET mac = ?
         WHERE mac =?
-    """, (mac, new_mac))
+    """, (new_mac, mac))
 
 
 # Function to get get all reference calibraton serial numbers
@@ -2225,7 +2225,7 @@ def change_computer_mac(cursor, choices):
             return
         
     mac = macs[number-1]
-    new_mac = input("New name: ")
+    new_mac = input("New MAC address: ")
     if not is_valid_mac(new_mac):
         print("Invalid MAC address.")
         return
