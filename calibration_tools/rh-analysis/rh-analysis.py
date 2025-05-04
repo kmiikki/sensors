@@ -372,7 +372,7 @@ def main():
     parser.add_argument("-i",  "--interval",type=int,   default=30,
                         help="Step between windows (samples)")
     parser.add_argument("-maxdiff", "--maxdiff", type=float, default=10,
-                        help="Max allowed |RHsensor – RHref| (%RH)")
+                        help="Max allowed |RHsensor – RHref| (%%RH)")
     parser.add_argument("-a",  "--auto",    action="store_true",
                         help="Auto‑scale X‑axis time units")
     args = parser.parse_args()
