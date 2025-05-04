@@ -46,6 +46,7 @@ project/
 | `-w`  | `--window`   | 300     | Sliding‑window length (samples)                   |
 | `-i`  | `--interval` | 30      | Step between windows (samples)                    |
 | –     | `--maxdt`    | 2.0     | Max allowed \|Tsensor – Tref\| (°C) inside window |
+| `-a`  | `--auto`     | False   | Auto‑scale X‑axis units on plateau plots          |
 
 All parameters—including defaults—are echoed to `analysis-t/thp-args.log`; overridden values are marked with `*`, ensuring deterministic reruns.
 
