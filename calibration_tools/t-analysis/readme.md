@@ -81,7 +81,7 @@ python3 t-analysis.py -th 2e-4 -w 600 -i 60
 
 ---
 
-## Expected Columns in *merged‑*.csv\*
+## Expected Columns in *merged‑\*.csv*
 
 ```text
 Time (s),Measurement,t1 (°C),t2 (°C),Tref (°C)
