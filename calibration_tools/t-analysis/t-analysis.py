@@ -6,24 +6,19 @@ Detect flat temperature plateaus in *merged-*.csv logs, pick one window per
 10 °C step (−50…+100 °C), regress Tref vs. sensor temperature, and write all
 artefacts needed for calibration.
 
-Outputs
-=======
-<MERGE_DIR>/
- ├─ t1_analysis.csv   full window list (Rank, slopes, means …)
- └─ t2_analysis.csv   (if t2 present)
-analysis-t/
- ├─ t1-ranks.csv / .txt   chosen plateaus (sorted by Tref) + Rank
- ├─ t2-ranks.*            idem for t2 if available
- ├─ t1_tref_regression.png/.txt      regression plot & coeffs
- ├─ t2_tref_regression.png/.txt      (optional)
- ├─ t1_cal_plateaus.png              overview of trace + plateaus
- ├─ t2_cal_plateaus.png              (optional)
- └─ thp-args.log                     CLI history
+2025‑05‑04 – **Update:**
+  • Added *auto‑scaled* time axis for the overview/plateau plots (‑a/‑‑auto).
+    – Seconds → minutes → hours → days, depending on the longest trace.
+  • `plot_plateaus()` gained ``auto_scale`` flag.
+  • New helper: ``get_time_scale_and_label()`` (borrowed from **rh‑analysis.py**).
+  • CLI: new boolean flag ``‑a / ‑‑auto`` to enable auto‑scale.
 """
 from __future__ import annotations
 
 import argparse, glob, os, re, shlex, sys, datetime
+from datetime import datetime
 from pathlib import Path
+import posixpath
 from typing import List, Dict
 
 import numpy as np
@@ -77,21 +72,66 @@ def bands(levels: List[int]):
         out.append(((lvl+lo)/2, lvl, (lvl+hi)/2))
     return out
 
-def plot_plateaus(df_full: pd.DataFrame, subset: pd.DataFrame, sensor_col: str, out_png: Path) -> None:
-    """Plot whole trace with horizontal/vertical markers for each plateau."""
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: auto‑scaling helpers (imported from rh‑analysis.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_time_scale_and_label(max_time_s: float) -> tuple[float, str]:
+    """Return (scale, label) so that *Time (s)* → scaled units in the plot."""
+    if max_time_s <= 300:            # ≤ 5 min
+        return 1.0, "Time (s)"
+    if max_time_s <= 18_000:         # 5 min – 5 h
+        return 1/60.0, "Time (min)"
+    if max_time_s <= 432_000:        # 5 h – 5 days
+        return 1/3600.0, "Time (h)"
+    return 1/86_400.0, "Time (d)"
+
+
+def plot_plateaus(
+    df_full: pd.DataFrame,
+    subset: pd.DataFrame,
+    sensor_col: str,
+    out_png: Path,
+    *,
+    auto_scale: bool = False,
+) -> None:
+    """Plot whole trace with markers for each plateau.
+
+    When *auto_scale* is *True*, the time axis is automatically scaled from
+    seconds to minutes, hours or days, depending on the longest trace.
+    """
+
     if subset.empty:
         return
+
+    # Decide x‑axis units & scaling factor
+    if auto_scale:
+        scale, xlabel = get_time_scale_and_label(df_full[TIME_COL].max())
+    else:
+        scale, xlabel = 1.0, "Time (s)"
+
+    # Pre‑scale the full‑trace time vector
+    t_scaled = df_full[TIME_COL] * scale
+
     fig, ax = plt.subplots()
-    ax.plot(df_full[TIME_COL], df_full[REF_COL], label="Tref", color="tab:red", lw=1.2)
-    ax.plot(df_full[TIME_COL], df_full[sensor_col], label=sensor_col, color="tab:blue", lw=1.0)
+    ax.plot(t_scaled, df_full[REF_COL], label="Tref", color="tab:red", lw=1.2)
+    ax.plot(t_scaled, df_full[sensor_col], label=sensor_col, color="tab:blue", lw=1.0)
+
+    # Overlay plateau markers (also scaled)
     for _, r in subset.iterrows():
-        s, e = r.Tstart, r.Tend
-        ax.hlines([r.Mean_ref, r.Mean_sens], xmin=s, xmax=e, colors="k")
-        ax.vlines((s+e)/2, min(r.Mean_ref, r.Mean_sens), max(r.Mean_ref, r.Mean_sens), colors="k")
-    ax.set_xlabel("Time (s)"); ax.set_ylabel("Temperature (°C)")
+        s_scaled = r.Tstart * scale
+        e_scaled = r.Tend * scale
+        ax.hlines([r.Mean_ref, r.Mean_sens], xmin=s_scaled, xmax=e_scaled, colors="k")
+        ax.vlines((s_scaled + e_scaled) / 2, min(r.Mean_ref, r.Mean_sens), max(r.Mean_ref, r.Mean_sens), colors="k")
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Temperature (°C)")
     ax.set_title(f"Calibration plateaus – {sensor_col}")
-    ax.grid(True, ls=":", lw=0.5); ax.legend(); fig.tight_layout()
-    fig.savefig(out_png, dpi=300); plt.close(fig)
+    ax.grid(True, ls=":", lw=0.5)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=300)
+    plt.close(fig)
 
 ###############################################################################
 # CORE
@@ -101,16 +141,18 @@ def main() -> None:
     """CLI entry point for plateau detection and regression workflow."""
     p = argparse.ArgumentParser("Temperature plateau analysis")
     p.add_argument("-th", type=float, default=5e-4, help="slope tolerance |m_ref|+|m_sensor|")
+    p.add_argument("-s", "--start", type=int, default=0, help="start row index")
     p.add_argument("-w", "--window", type=int, default=300, help="window length (rows)")
     p.add_argument("-i", "--interval", type=int, default=30, help="slide step (rows)")
-    p.add_argument("-s", "--start", type=int, default=0, help="start row index")
     p.add_argument("-maxdt", type=float, default=5.0, help="max |Tref−Tsensor| inside window (°C)")
+    p.add_argument("-a", "--auto", action="store_true", help="auto‑scale time axis units in plateau plots")
     args = p.parse_args()
 
     # log call
     OUTDIR.mkdir(exist_ok=True)
-    with open(OUTDIR/"thp-args.log", "a", encoding="utf-8") as fh:
-        fh.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} t-analysis.py {shlex.join(sys.argv[1:])}\n")
+        
+    #with open(OUTDIR/"thp-args.log", "a", encoding="utf-8") as fh:
+    #    fh.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} t-analysis.py {shlex.join(sys.argv[1:])}\n")
 
     merged = newest_merged()
     if merged is None:
@@ -120,6 +162,26 @@ def main() -> None:
         if req not in df.columns:
             print("Missing", req); sys.exit(1)
     has_t2 = SENS2_COL in df.columns
+    
+    # ── argument log ───────────────────────────────────────────────────────
+    log_path = OUTDIR/"thp-args.log"
+    defaults = dict(th=5e-4, start=0, window=300, interval=30,
+                    maxdt=5, auto=False)
+    with open(log_path, "w", encoding="utf-8") as fh:
+        fh.write(f"{datetime.now().isoformat(timespec='seconds')}\n")
+        fh.write(f"{posixpath.abspath(merged)}\n")
+    
+        # Produce “‑opt=value” list, mark overrides with “*”
+        for key, dflt in defaults.items():
+            val = getattr(args, key if key != "maxdiff" else "maxdiff")
+            mark = " *" if val != dflt else ""
+            if key == "auto":
+                # boolean flag prints only when set, per spec
+                line = "-a" + mark if val else "-a=False"
+            else:
+                line = f"-{key}={val}{mark}"
+            fh.write(line + "\n")
+    # ─────────────────────────────
 
     print("Scanning windows for flat plateaus …")
     results: Dict[str, List[dict]] = {"t1": [], "t2": []}
@@ -157,18 +219,29 @@ def main() -> None:
                 picks.append(int(row.Rank)); seen.add(int(row.Rank))
         chosen[tag]=picks
 
-    def save_ranks(tag:str)->pd.DataFrame:
-        if not chosen.get(tag): return pd.DataFrame()
-        sub=frames[tag][frames[tag]["Rank"].isin(chosen[tag])].sort_values("Mean_ref")
-        tidy=sub[["Rank","Mean_ref","Mean_sens"]].rename(columns={"Mean_ref":"Tref (°C)","Mean_sens":f"{tag.upper()} (°C)"})
-        tidy.to_csv(OUTDIR/RANK_CSV.format(tag=tag), index=False)
-        tidy.to_csv(OUTDIR/RANK_TXT.format(tag=tag), index=False, header=False)
+    def save_ranks(tag: str) -> pd.DataFrame:
+        if not chosen.get(tag):          # (unchanged)
+            return pd.DataFrame()
+    
+        # ---------- pick & prepare  ----------
+        sub   = frames[tag][frames[tag]["Rank"].isin(chosen[tag])].sort_values("Mean_ref")
+        tidy  = sub[["Rank", "Mean_ref", "Mean_sens"]].rename(
+                    columns={"Mean_ref": "Tref (°C)", "Mean_sens": f"{tag.upper()} (°C)"})
+    
+        # ---------- CSV: keep Rank, no header change  ----------
+        tidy.to_csv(OUTDIR / RANK_CSV.format(tag=tag), index=False)          # (unchanged)
+    
+        # ---------- TXT: drop Rank + keep header  ----------
+        tidy.drop(columns=["Rank"]).to_csv(                                   # NEW
+            OUTDIR / RANK_TXT.format(tag=tag),
+            index=False, header=True)                                         # header now True
+    
         return sub
 
     picked={tag:save_ranks(tag) for tag in chosen if chosen[tag]}
 
     print("Linear regression on chosen plateaus …")
-    def regress(tag:str, sensor_col:str):
+    def regress(tag:str, sensor_col:str, auto:bool):
         sub=picked.get(tag)
         if sub is None or sub.empty: return
         x,y=sub.Mean_sens.to_numpy(), sub.Mean_ref.to_numpy()
@@ -200,11 +273,13 @@ def main() -> None:
                 f"  N:              {len(x)}\n"
             )
         # trace overview with plateaus
-        plot_plateaus(df_full=df, subset=sub, sensor_col=sensor_col, out_png=OUTDIR/PLATEAU_PNG_FMT.format(tag=tag))
+        plot_plateaus(df_full=df, subset=sub, sensor_col=sensor_col,
+                      out_png=OUTDIR/PLATEAU_PNG_FMT.format(tag=tag),
+                      auto_scale=auto)
 
-    regress("t1", SENS1_COL)
+    regress("t1", SENS1_COL, args.auto)
     if has_t2:
-        regress("t2", SENS2_COL)
+        regress("t2", SENS2_COL, args.auto)
 
     print("Done – results in", OUTDIR)
 
