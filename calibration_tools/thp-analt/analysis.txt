@@ -1,0 +1,55 @@
+Data info
+---------
+File        : thp.csv
+Directory   : /tmp
+Sensors     : 2
+Data rows   : 10045
+Time (s)    : 10044.0
+Time (min)  : 167.4
+Target (min): 10
+Range (min) : 10
+Interval (s): 1.0
+
+Statistics
+----------
+Sensor     : 1
+Slope      : 2e-05 °C/s
+Constant   : 63.41 °C
+Time (min) : 10
+Delta °C   : 0.0118
+Trials     : 600
+Min        : 63.58
+Max        : 63.64
+Mean       : 63.606
+Median     : 63.6
+Method     : Normal distribution
+Alpha      : 0.95
+CI lower   : 63.6048
+CI upper   : 63.607
+CI half    : 0.0011
+SEM        : 0.0006
+
+t (°C): 63.606±0.001
+t (°C): [95% CI: 63.605-63.607]
+
+Statistics
+----------
+Sensor     : 2
+Slope      : 2e-05 °C/s
+Constant   : 62.86 °C
+Time (min) : 10
+Delta °C   : 0.0093
+Trials     : 600
+Min        : 62.98
+Max        : 63.03
+Mean       : 63.007
+Median     : 63.01
+Method     : Normal distribution
+Alpha      : 0.95
+CI lower   : 63.0059
+CI upper   : 63.0075
+CI half    : 0.0008
+SEM        : 0.0004
+
+t (°C): 63.0067±0.0008
+t (°C): [95% CI: 63.0059-63.0075]
