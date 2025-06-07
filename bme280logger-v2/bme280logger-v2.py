@@ -31,6 +31,7 @@ import signal
 import sys
 import threading
 import time
+from smbus2 import SMBus   # <-- already available in OS images
 from datetime import datetime
 from pathlib import Path
 from sys import exit
@@ -50,6 +51,13 @@ np.set_printoptions(suppress=True, formatter={'float_kind': '{:f}'.format})
 # ------------------------------
 # GLOBAL CONSTANTS & DEFAULTS
 # ------------------------------
+
+# --- BME280 register addresses ---
+CTRL_MEAS = 0xF4           # measurement control
+STATUS    = 0xF3           # bit 3 (0x08) = measuring
+RESET_REG = 0xE0
+RESET_CMD = 0xB6           # soft-reset command
+
 rows_limit = 3600 * 24 * 60
 """
 The rows_limit variable is the upper limit for data rows stored in memory. It
@@ -63,10 +71,10 @@ This row limitation guarantees sufficient memory for each measurement for
 60 days, when the data acquisition interval is 1 s.
 """
 
-COOLDOWN_DURATION = 30.0  # 1 hour in seconds
+COOLDOWN_DURATION = 3600.0  # 1 hour in seconds
 
 # Program version
-version = 2.1
+version = 2.2
 
 # Relay pins
 relay_pin_list = [21, 20]
@@ -274,6 +282,39 @@ def parse_arguments():
 # ------------------------------
 # HELPER FUNCTIONS
 # ------------------------------
+
+def trigger_forced_measure(addr):
+    """
+    Put BME280 at *addr* into FORCED mode, wait until the conversion
+    finishes (<10 ms with default oversampling), then return True.
+    Returns False if sensor doesn’t respond.
+    """
+    try:
+        with SMBus(1) as bus:
+            reg = bus.read_byte_data(addr, CTRL_MEAS)
+            reg = (reg & 0xFC) | 0x01          # set mode bits to 01 = FORCED
+            bus.write_byte_data(addr, CTRL_MEAS, reg)
+            t0 = time.time()
+            while bus.read_byte_data(addr, STATUS) & 0x08:   # measuring?
+                if time.time() - t0 > 0.05:                  # >50 ms → timeout
+                    return False
+                time.sleep(0.003)
+        return True
+    except OSError:
+        return False
+
+
+def soft_reset(addr):
+    """Send Bosch soft-reset (0xB6) and wait 3 ms.  Returns True if ACKed."""
+    try:
+        with SMBus(1) as bus:
+            bus.write_byte_data(addr, RESET_REG, RESET_CMD)
+        time.sleep(0.003)
+        return True
+    except OSError:
+        return False
+
+
 def get_sensors() -> list:
     """
     Scans the I2C bus (via board.I2C) for 0x76 or 0x77 addresses and returns a list of found device addresses.
@@ -887,6 +928,11 @@ def read_and_calibrate_sensor_data(address, relay_obj, sensor_index, sensor_cals
     i = 0
     while True:
         try:
+            # --- NEW: trigger a single FORCED-mode conversion ---
+            if not trigger_forced_measure(address):
+                raise OSError       # fall through to retry logic
+            
+            # now read the data (unchanged)
             t_, p_, h_ = readBME280All(address)  # (temp °C, pressure hPa, humidity %)
             cal_dict = {}
             if sensor_cals[sensor_index]:
@@ -901,20 +947,27 @@ def read_and_calibrate_sensor_data(address, relay_obj, sensor_index, sensor_cals
                     p_cal = sensor_cals[sensor_index].get_calibrated_value(p_, "Pressure")
                     cal_dict["Pressure"] = p_cal
             return True, t_, h_, p_, cal_dict, errors
-        except Exception as e:
+        except Exception:
+            # --- NEW: try ONE soft-reset before touching the relays ---
+            if i == 0 and soft_reset(address):
+                i += 1
+                continue            # go back to try reading again
+            
+            # original relay-reboot logic follows
             if i < trials and is_relays:
                 terr = datetime.now().timestamp()
-                if errors == 0:
-                    error_log = ErrorLog(log.dir_path, "sensor_failures", "log", log.dt_part, log.ts_prefix)
+                if error_log is None:                 # prevent duplicate object
+                    error_log = ErrorLog(log.dir_path, "sensor_failures","log", log.dt_part, log.ts_prefix)
                 msg = f"Unable to read sensor {hex(address)}. Reboot {i+1}/{trials}"
                 if error_log:
                     error_log.write(terr, count, msg)
                 print(msg)
-                relay_obj.all_open()
+                ch = sensor_index + 1          # 1 for first sensor (0x76), 2 for second (0x77)
+                relay_obj.ch_open(ch)          # cut power only to that sensor 
                 sleep(delay)
                 if is_simulation:
-                    relay_fail.all_close()
-                relay_obj.all_close()
+                    relay_fail.all_close(1)
+                relay_obj.ch_close(ch)         # restore power to that sensor
                 errors += 1
                 i += 1
                 sleep(delay)
@@ -1058,7 +1111,6 @@ def main():
                 # skip reading => store NaNs
                 sensor_values.extend([np.nan, np.nan, np.nan])
                 cal_readings.append({})
-                r.ch_open(s_idx + 1)
                 continue
             else:
                 # <--- WE JUST LEFT COOL-DOWN (if it was set before).
@@ -1091,7 +1143,7 @@ def main():
                 if consecutive_failures[s_idx] >= 5:
                     # 1 hour cooldown
                     cooldown_until[s_idx] = now_time + COOLDOWN_DURATION
-                    r.ch_open(s_idx + 1)
+                    # r.ch_open(s_idx + 1)
                     print(f"Sensor {hex(address)} => 5 consecutive fails. Cooldown until {datetime.fromtimestamp(cooldown_until[s_idx])}.")
         if all(sensor_ok):
             for si in range(sensor_count):
