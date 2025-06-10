@@ -8,6 +8,7 @@ Created on Wed Sep  4 10:10:42 2024
 import os
 from datetime import datetime
 
+
 class DataLog:
     """Data log object class"""
     _dt_list = []
@@ -56,12 +57,22 @@ class DataLog:
 
     
     def write(self, data): # header: list, row: string
-        if not self._is_header:
+        """
+        Writes a line to the log file.
+        - If data is a list, join with commas (header).
+        - If data is a string, write as-is (row).
+        """
+        if isinstance(data, list):
             data = ", ".join(data)
-            self._is_header = True
+            if not self._is_header:
+                self._is_header = True
+        else:
+            # If not a list, treat as string (row). Just set header flag if first line.
+            if not self._is_header:
+                self._is_header = True
         data += "\n"
         with open(self.full_path, 'a') as f:
-            f.write(data)            
+            f.write(data)           
 
     
     @property
@@ -83,6 +94,7 @@ class DataLog:
     def __del__(self):
         if self._dt_part in DataLog._dt_list:
             DataLog._dt_list.remove(self._dt_part)
+
         
 class ErrorLog:
     """Error log object class"""
@@ -124,7 +136,7 @@ class ErrorLog:
         self.dt_text = self.dt.strftime("%Y-%m-%d %H:%M:%S.%f")
         out = ", ".join([self.dt_text, str(measurement), error_text]) + "\n"
         
-        # Frite event to file
+        # Write event to file
         with open(self._dir_path, 'a') as f:
             if not self._is_header:
                 f.write("Datetime, Measurement, Event\n")
