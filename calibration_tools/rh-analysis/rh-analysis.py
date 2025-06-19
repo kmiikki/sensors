@@ -27,10 +27,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import json
+from typing import Dict, Any, Tuple
 from datetime import datetime           # NEW – for the log time‑stamp
 from scipy.stats import linregress
 from sklearn.linear_model import LinearRegression
 
+# External helper – parses the “zone,num1[,num2]” string
+from thpcaldb import parse_zone_numbers
 
 def _regression_plot(x, y, slope, intercept, png_path, sensor_label):
     """Create scatter + fitted‑line plot (300 dpi)."""
@@ -134,7 +138,17 @@ def read_and_filter_data(file_path):
     """
     df = pd.read_csv(file_path)
     df_filtered = df[['Time (s)','Measurement', 'RH1% (%)', 'RH2% (%)', 'RHref (%RH)']]
-    return df_filtered
+    
+    # Caldict addition
+    date_time = None
+    try:
+        date_time = df['Datetime'][0]
+    except:
+        print('Invalid log format. Datetime value not found in the first data row.')
+        
+    
+    # return df_filtered
+    return date_time, df_filtered
 
 
 def analyze_column(data: pd.DataFrame, col_mean_rhref: str, col_mean: str, targets):
@@ -360,6 +374,86 @@ def compute_targets(target_list):
         index += 1
     return result
 
+# ───────────────────────────────────────────────────────────────────────────────
+#  JSON‑based calibration‑file helpers (used if –cal is given)
+# ───────────────────────────────────────────────────────────────────────────────
+
+
+def _convert_value(val: str) -> Any:
+    """Return float if possible, else raw string."""
+    try:
+        return float(val)
+    except ValueError:
+        return val
+
+
+def find_thpcal_json() -> Tuple[str, bool]:
+    """
+    Search for 'thpcal.json' in:
+      1. current dir
+      2. parent dir
+      3. /opt/tools
+    """
+    filename = 'thpcal.json'
+    search_dirs = [
+        os.getcwd(),
+        os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
+        '/opt/tools'
+    ]
+    for directory in search_dirs:
+        path = os.path.join(directory, filename)
+        if os.path.isfile(path):
+            print("Calibration file thpcal.json found in: " + directory)
+            return path, True
+    new_path = os.path.join(os.getcwd(), filename)
+    print("Path to the new calibration file thpcal.json: " + os.getcwd())
+    return new_path, False
+
+
+def read_thpcal_json(
+    filename: str
+) -> Dict[int, Dict[str, Dict[str, Any]]]:
+    """Load nested dict from JSON, converting top‐level keys back to int."""
+    with open(filename, 'r', encoding='utf-8') as f:
+        raw = json.load(f)
+    return { int(k): v for k, v in raw.items() }
+
+
+def read_and_merge_thpcal_json(
+    filename: str,
+    new_entries: Dict[int, Dict[str, Dict[str, Any]]]
+) -> Dict[int, Dict[str, Dict[str, Any]]]:
+    """
+    1) Load existing JSON (if any)
+    2) Merge in `new_entries` at keys (number → sensor → type)
+    3) Return merged dict
+    """
+    try:
+        cal = read_thpcal_json(filename)
+    except Exception:
+        print('Creating a new thpcal.json file.')
+        return new_entries
+    for num, sensors in new_entries.items():
+        cal.setdefault(num, {})
+        for sensor, types in sensors.items():
+            cal[num].setdefault(sensor, {})
+            for t, info in types.items():
+                cal[num][sensor][t] = info
+    print('Merged new data with existing calibration file.')
+    return cal
+
+
+def write_thpcal_json(
+    filename: str,
+    cal_dict: Dict[int, Dict[str, Dict[str, Any]]]
+) -> None:
+    """Dump nested calibration dict to JSON (int keys → str)."""
+    raw = { str(num): sensors for num, sensors in cal_dict.items() }
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+    print('→ saved thpcal.json')
+
+
 def main():
     analysis_dir = './analysis-rh'  # original default; we will override below if needed
 
@@ -375,6 +469,20 @@ def main():
                         help="Max allowed |RHsensor – RHref| (%%RH)")
     parser.add_argument("-a",  "--auto",    action="store_true",
                         help="Auto‑scale X‑axis time units")
+    
+    # Optional calibration and datetime‑zero flags
+    parser.add_argument(
+        "-cal",
+        metavar="SPEC",
+        type=str,
+        help="Calibration spec zone,num1[,num2] (e.g. -cal C11,12). If omitted, no cal JSON is produced.",
+    )
+    parser.add_argument(
+        "-z",
+        action="store_true",
+        help="Zero the time component of the stored datetime (→ 00:00:00)",
+    )
+    
     args = parser.parse_args()
 
     th           = args.th
@@ -384,6 +492,21 @@ def main():
     max_rh_diff  = args.maxdiff
     auto_scale   = args.auto             # use when calling plot_calibration_plateaus
     
+    # ----------------------------------------------------------------------
+    # If -cal is provided, derive sensor codes
+    # ----------------------------------------------------------------------
+    sensor_code_map: Dict[str, str] = {}
+    if args.cal:
+        try:
+            zone, num1, num2 = parse_zone_numbers(args.cal)
+            if num1 is not None:
+                sensor_code_map["RH1% (%)"] = f"{zone}{num1}"
+            if num2 is not None:
+                sensor_code_map["RH2% (%)"] = f"{zone}{num2}"
+        except Exception as exc:
+            print(f"Invalid -cal spec '{args.cal}': {exc}. Skipping calibration JSON generation.")
+            args.cal = None  # disable cal path    
+       
     target_levels = [0,
                10,
                20,
@@ -410,9 +533,11 @@ def main():
         print('Merge file not found.')
         sys.exit()
 
-    # 3) Read/Filter rh_analysis.csv
-    df = read_and_filter_data(merged_csv_path)
+    # 3) Read/Filter rh_analysis.csv and build calibration timestamp
+    cal_dt, df = read_and_filter_data(merged_csv_path)
     length = len(df)
+    if args.z and cal_dt:
+        cal_dt = cal_dt[:10] + " 00:00:00"
 
     # 4) Determine sensor count
     ref_col = ''
@@ -518,7 +643,7 @@ def main():
     # ------------------------------------------------------------------
     # 2.  Sliding‑window loop
     # ------------------------------------------------------------------
-    print("1. Performing linear regression analyses.")
+    print("2. Performing linear regression analyses.")
     pos = start
     while pos < length - 1:             # need ≥ 2 data points
         win = df.iloc[pos : pos + window]
@@ -585,7 +710,7 @@ def main():
     # ------------------------------------------------------------------
     # 3.  Tidy result DataFrames
     # ------------------------------------------------------------------
-    print('2. Ranking best slopes.')
+    print('3. Ranking best slopes.')
     if has_sensor1:
         res1 = result_frames["RH1%"]   # RH1% results
     if has_sensor2:
@@ -639,7 +764,7 @@ def main():
         best_rh2_ranks = [row[0] for row in results_rh2]
 
 
-    print('3. Saving analysis files.')
+    print('4. Saving analysis files.')
     if has_sensor1 and not res1.empty:
         res1.to_csv(os.path.join(Path(merged_csv_path).parent, 'rh1_analysis.csv'), index=False)
     if has_sensor2 and not res2.empty:
@@ -649,12 +774,13 @@ def main():
     # ------------------------------------------------------------------
     #  After plateau selection → perform linear regression(s)
     # ------------------------------------------------------------------
-    print('4. Perform linear regression(s)')    
+    print('5. Perform linear regression(s)')    
     sensors_info = [
         ("RH1% (%)", best_rh1_ranks if "best_rh1_ranks" in locals() else [], res1 if "res1" in locals() else None),
         ("RH2% (%)", best_rh2_ranks if "best_rh2_ranks" in locals() else [], res2 if "res2" in locals() else None),
     ]
 
+    results = {}
     for sensor_col, ranks, res_df in sensors_info:
         # Skip missing dataframes or empty rank lists
         if res_df is None or not ranks:
@@ -669,6 +795,23 @@ def main():
         y = subset["Mean: RHref (%RH)"].values
 
         lr = linregress(x, y)
+        
+        # --- add calibration results to JSON-ready dict -----------------
+        num         = 1 if sensor_col.startswith("RH1") else 2
+        sensor_code = sensor_code_map.get(sensor_col, f"S{num}")
+    
+        results.setdefault(num, {}).setdefault(sensor_code, {})['H'] = {
+        "datetime": cal_dt
+                   if cal_dt
+                   else datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "label":    "Relative humidity",
+        "name":     sensor_col.replace(" (%)", ""),
+        "col":      sensor_col,
+        "slope":    lr.slope,
+        "constant": lr.intercept,
+        "r2":       lr.rvalue ** 2,
+    }
+    # ---------------------------------------------------------------
 
         # Filenames (match requested pattern: rh1%_(%)_regression.png, etc.)
         base = sensor_col.lower().replace(" ", "_")  # "rh1%_(%)"
@@ -688,7 +831,7 @@ def main():
     #  Create new calibration plateau graphs (reuse in‑memory data)
     # -----------------------------------------------------------
     # `df` already holds the merged CSV (filtered) so we don’t read it again.
-    print('5. Create calibration plateau graphs')
+    print('6. Create calibration plateau graphs')
     merged_df = df  # alias for clarity
 
     if not merged_df.empty:
@@ -721,6 +864,17 @@ def main():
                 )
     else:
         print("No data in merged DataFrame; skipping creation of new plateau graphs.")
+
+    # -----------------------------------------------------------------
+    # 6.  Optionally create / update thpcal.json
+    # -----------------------------------------------------------------
+    if args.cal and results:
+        print("7. Creating/updating calibration file.")
+
+        json_path, exists = find_thpcal_json()
+        merged = read_and_merge_thpcal_json(json_path, results) if exists else results
+        write_thpcal_json(json_path, merged)
+
 
 if __name__ == '__main__':
     main()
