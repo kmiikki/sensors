@@ -1,271 +1,199 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Example script that:
- 1) Finds merged-*.csv
- 2) (Optionally) renames columns "t1 (°C)" -> "t1" internally for convenience
- 3) For each BME sensor (t1, t2), tries shifting Tref in a user-specified range
-    to minimize std of (Tref - Tsensor). Saves shift vs. std dev results in:
-       tshift-temp.png, tshift-temp-t1.csv, [tshift-temp-t2.csv]
- 4) Builds a time-aligned DataFrame => talign-thp.csv
- 5) Performs the temperature plateau detection with linear regression in
-    sliding windows => slopes-t1.csv / slopes-t2.csv, etc.
- 6) Creates final “calibration” points => t1-ranks.csv / t2-ranks.csv
- 7) Everything is saved under analysis-t/ except for the final 'talign-thp.csv'
-    and 'tshift-temp*.csv' which are in the working dir for demonstration.
+"""thp-t-flats.py – quick‑and‑dirty plateau selector + calibration export
+──────────────────────────────────────────────────────────────────────────────
+*SHIFT + FLATS* – aligns **Tref** in time, detects temperature plateaus for the
+BME280 sensors (*t1* / *t2*), runs a linear regression, and writes artefacts
+& calibration data.
 
-Author: <Kim Miikki>
-Created: 2025-01-30
+*2025‑06‑18 – patch 2*
+  • **FIX**: re‑added ``save_slopes_csv`` and ``save_final_ranks_csv_txt`` helpers
+    that went missing, eliminating *NameError* during run.
+  • Keeps all new features from patch 1 (R² six‑decimal precision, `-cal`/`-z`
+    flags, thpcal.json updates).
 """
+from __future__ import annotations
 
-import os
-import sys
-import argparse
-import math
+###############################################################################
+# Imports
+###############################################################################
+import os, sys, argparse, math, re, json
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any, Tuple
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from sklearn.linear_model import LinearRegression
+from scipy.stats import linregress
+
+# Calibration‑dictionary helper ---------------------------------------------
+from thpcaldb import parse_zone_numbers
 
 ###############################################################################
-# PART A) SHIFT LOGIC
+# --- JSON helpers (borrowed from t‑analysis.py) -----------------------------
+###############################################################################
+
+def find_thpcal_json() -> Tuple[str, bool]:
+    """Search cwd → parent → /opt/tools for *thpcal.json*."""
+    filename = "thpcal.json"
+    for d in (os.getcwd(), os.path.abspath(os.path.join(os.getcwd(), os.pardir)), "/opt/tools"):
+        p = os.path.join(d, filename)
+        if os.path.isfile(p):
+            return p, True
+    return os.path.join(os.getcwd(), filename), False
+
+
+def read_thpcal_json(path: str) -> Dict[int, Dict[str, Dict[str, Any]]]:
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    return {int(k): v for k, v in raw.items()}
+
+
+def merge_thpcal(existing: dict, new_entries: dict) -> dict:
+    for num, sensors in new_entries.items():
+        existing.setdefault(num, {})
+        for sens, types in sensors.items():
+            existing[num].setdefault(sens, {}).update(types)
+    return existing
+
+
+def write_thpcal_json(path: str, data: dict) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({str(k): v for k, v in data.items()}, fh, indent=2, ensure_ascii=False)
+
+###############################################################################
+# PART A) SHIFT LOGIC (unchanged)
 ###############################################################################
 
 def compute_std_for_shift(sens_time, sens_temp, ref_time, ref_temp, shift):
-    """
-    Shift Tref by 'shift' => (ref_time + shift).
-    Interpolate Tref onto sens_time, compute std of (Tref_interpolated - Tsensor).
-    Returns (std_diff, overlap_mask).
-      - overlap_mask is True/False for each sens_time point that lies within
-        the overlapping region after the shift.
-      - If there's no overlap, returns (np.inf, None).
-    """
+    """Compute std of diff after time‑shifting *Tref* by *shift* seconds."""
     shifted_ref_time = ref_time + shift
-    
-    # Determine overlapping time window
     t_min = max(shifted_ref_time.min(), sens_time.min())
     t_max = min(shifted_ref_time.max(), sens_time.max())
     if t_min >= t_max:
         return np.inf, None
-    
-    overlap_mask = (sens_time >= t_min) & (sens_time <= t_max)
-    if not np.any(overlap_mask):
+    mask = (sens_time >= t_min) & (sens_time <= t_max)
+    if not np.any(mask):
         return np.inf, None
-    
-    sens_time_overlap = sens_time[overlap_mask]
-    sens_temp_overlap = sens_temp[overlap_mask]
-    ref_temp_shifted_interp = np.interp(sens_time_overlap, shifted_ref_time, ref_temp)
-    
-    diff = ref_temp_shifted_interp - sens_temp_overlap
-    std_diff = np.std(diff)
-    return std_diff, overlap_mask
+    sens_time_ov = sens_time[mask]
+    sens_temp_ov = sens_temp[mask]
+    ref_temp_shifted = np.interp(sens_time_ov, shifted_ref_time, ref_temp)
+    return float(np.std(ref_temp_shifted - sens_temp_ov)), mask
+
 
 def find_best_shift(sens_time, sens_temp, ref_time, ref_temp, shift_min=-300, shift_max=300):
-    """
-    Tests all integer shifts from shift_min..shift_max. Picks the shift that yields
-    min std of (Tref_interpolated - Tsensor).
-    Returns: (best_shift, best_sdev, best_mask, shift_values, sdev_values)
-    """
-    shift_values = np.arange(shift_min, shift_max + 1, 1)
-    sdev_values = []
-    
-    best_shift = 0
-    best_sdev = np.inf
-    best_mask = None
-    
-    for s in shift_values:
-        std_diff, overlap_mask = compute_std_for_shift(sens_time, sens_temp, ref_time, ref_temp, s)
-        sdev_values.append(std_diff)
-        if std_diff < best_sdev:
-            best_sdev = std_diff
-            best_shift = s
-            best_mask = overlap_mask
-    
-    return best_shift, best_sdev, best_mask, shift_values, sdev_values
+    shift_vals = np.arange(shift_min, shift_max + 1, 1)
+    sdev_vals, best_shift, best_sdev, best_mask = [], 0, np.inf, None
+    for s in shift_vals:
+        sd, mask = compute_std_for_shift(sens_time, sens_temp, ref_time, ref_temp, s)
+        sdev_vals.append(sd)
+        if sd < best_sdev:
+            best_shift, best_sdev, best_mask = s, sd, mask
+    return best_shift, best_sdev, best_mask, shift_vals, np.array(sdev_vals)
 
-def align_data_for_shift(sens_time, sens_temp, ref_time, ref_temp, best_shift, overlap_mask):
-    """
-    With best_shift, produce aligned arrays for sensor-time vs. shifted Tref.
-    We keep only the overlapping portion indicated by overlap_mask.
-    Returns arrays: aligned_sens_time, aligned_sens_temp, aligned_ref_temp
-    """
-    # Subset sensor
-    sens_time_al = sens_time[overlap_mask]
-    sens_temp_al = sens_temp[overlap_mask]
-    
-    # Shift ref time, then interpolate
-    shifted_ref_time = ref_time + best_shift
-    ref_temp_al = np.interp(sens_time_al, shifted_ref_time, ref_temp)
-    
+
+def align_data_for_shift(sens_time, sens_temp, ref_time, ref_temp, best_shift, mask):
+    sens_time_al = sens_time[mask]
+    sens_temp_al = sens_temp[mask]
+    ref_temp_al = np.interp(sens_time_al, ref_time + best_shift, ref_temp)
     return sens_time_al, sens_temp_al, ref_temp_al
 
-
 ###############################################################################
-# PART B) SLOPE DETECTION LOGIC
+# PART B) SLOPE / PLATEAU LOGIC
 ###############################################################################
 
-def compute_slope(df, xcol, ycol):
-    """Linear regression slope (m) & intercept (c) of ycol vs xcol."""
-    X = df[[xcol]].values
-    Y = df[ycol].values
-    reg = LinearRegression().fit(X, Y)
+def compute_slope(df: pd.DataFrame, xcol: str, ycol: str):
+    reg = LinearRegression().fit(df[[xcol]].values, df[ycol].values)
     return float(reg.coef_[0]), float(reg.intercept_)
 
+
 def calc_window_slopes(df, time_col, ref_col, sensor_col, interval, window):
-    """
-    Slide in steps of 'interval' seconds.
-    For each step s, consider data in [s, s+window], i.e. inclusive logic here.
-    Return list of dict with slopes & summary stats.
-    """
     results = []
-    
-    time_min = df[time_col].min()
-    time_max = df[time_col].max()
-    
-    # We'll use inclusive logic: subDF in [s, s+window-1].
-    # Then store interval_end = s + window so that user sees an inclusive range.
-    s = time_min
-    while (s + window - 1) <= time_max:
-        interval_start = s
-        interval_end = s + window - 1
-        
-        subdf = df[(df[time_col] >= interval_start) & (df[time_col] <= interval_end)]
-        if len(subdf) < 2:
-            s += interval
-            continue
-        
-        m_ref, _ = compute_slope(subdf, time_col, ref_col)
-        m_sen, _ = compute_slope(subdf, time_col, sensor_col)
-        sum_abs_slopes = abs(m_ref) + abs(m_sen)
-        
-        # summary stats
-        mean_ref = subdf[ref_col].mean()
-        mean_sen = subdf[sensor_col].mean()
-        min_ref  = subdf[ref_col].min()
-        max_ref  = subdf[ref_col].max()
-        min_sen  = subdf[sensor_col].min()
-        max_sen  = subdf[sensor_col].max()
-        
+    t_min, t_max = df[time_col].min(), df[time_col].max()
+    s = t_min
+    while (s + window - 1) <= t_max:
+        sub = df[(df[time_col] >= s) & (df[time_col] <= s + window - 1)]
+        if len(sub) < 2:
+            s += interval; continue
+        m_ref, _ = compute_slope(sub, time_col, ref_col)
+        m_sen, _ = compute_slope(sub, time_col, sensor_col)
+        sum_abs = abs(m_ref) + abs(m_sen)
         results.append({
-            "Interval start (s)": interval_start,
-            "Interval end (s)": interval_end + 1,  # store as half-open or just +1 for clarity
-            "Sum of abs(slope)": sum_abs_slopes,
+            "Interval start (s)": s,
+            "Interval end (s)": s + window,  # half‑open
+            "Sum of abs(slope)": sum_abs,
             f"Slope: {ref_col}": m_ref,
             f"Slope: {sensor_col}": m_sen,
-            f"Mean: {ref_col}": mean_ref,
-            f"Mean: {sensor_col}": mean_sen,
-            f"Min: {ref_col}": min_ref,
-            f"Max: {ref_col}": max_ref,
-            f"Min: {sensor_col}": min_sen,
-            f"Max: {sensor_col}": max_sen,
+            f"Mean: {ref_col}": sub[ref_col].mean(),
+            f"Mean: {sensor_col}": sub[sensor_col].mean(),
+            f"Min: {ref_col}": sub[ref_col].min(),
+            f"Max: {ref_col}": sub[ref_col].max(),
+            f"Min: {sensor_col}": sub[sensor_col].min(),
+            f"Max: {sensor_col}": sub[sensor_col].max(),
         })
-        
         s += interval
-    
     return results
 
-def partition_calibration_points(sorted_df, ref_col, sensor_col, threshold, segments):
-    """
-    Filter to rows with sum of abs slopes <= threshold, then partition by 'Mean: sensor_col'.
-    Return top-ranked row from each partition (lowest sum_abs_slope).
-    """
-    valid_df = sorted_df[sorted_df["Sum of abs(slope)"] <= threshold]
-    if valid_df.empty:
+
+def partition_calibration_points(df_sorted, ref_col, sensor_col, threshold, segments):
+    valid = df_sorted[df_sorted["Sum of abs(slope)"] <= threshold]
+    if valid.empty:
         return []
-    
     sensor_mean = f"Mean: {sensor_col}"
-    min_val = valid_df[sensor_mean].min()
-    max_val = valid_df[sensor_mean].max()
-    
-    if math.isclose(min_val, max_val):
-        # Not enough range, pick best row
-        return [valid_df.iloc[0].to_dict()]
-    
-    seg_size = (max_val - min_val) / segments
+    lo, hi_tot = valid[sensor_mean].min(), valid[sensor_mean].max()
+    if math.isclose(lo, hi_tot):
+        return [valid.iloc[0].to_dict()]
+    seg_size = (hi_tot - lo) / segments
     chosen = []
-    current_low = min_val
-    
-    for i in range(segments):
-        current_high = current_low + seg_size
-        subset = valid_df[(valid_df[sensor_mean] >= current_low) & (valid_df[sensor_mean] < current_high)]
-        if not subset.empty:
-            # top-ranked = first row after sort by Sum of abs(slope)
-            chosen.append(subset.iloc[0].to_dict())
-        current_low = current_high
-    
+    for _ in range(segments):
+        hi = lo + seg_size
+        sub = valid[(valid[sensor_mean] >= lo) & (valid[sensor_mean] < hi)]
+        if not sub.empty:
+            chosen.append(sub.iloc[0].to_dict())
+        lo = hi
     return chosen
 
 ###############################################################################
-# PART C) RENAME HELPERS & FILE EXPORT
+# PART C) CSV / RENAME HELPERS
 ###############################################################################
 
 def rename_temp_columns_in(df):
-    """
-    Rename the original columns for easier internal usage:
-      't1 (°C)' -> 't1',
-      't2 (°C)' -> 't2',
-      'Tref (°C)' -> 'Tref'
-    """
-    rename_map = {
-        "t1 (°C)": "t1",
-        "t2 (°C)": "t2",
-        "Tref (°C)": "Tref"
-    }
-    df.rename(columns={k:v for k,v in rename_map.items() if k in df.columns}, inplace=True)
+    df.rename(columns={"t1 (°C)": "t1", "t2 (°C)": "t2", "Tref (°C)": "Tref"}, inplace=True)
+
 
 def rename_temp_columns_out(df):
-    """
-    Opposite rename so final CSV matches original style.
-      't1' -> 't1 (°C)',
-      't2' -> 't2 (°C)',
-      'Tref' -> 'Tref (°C)'
-    """
-    rename_map = {
-        "t1": "t1 (°C)",
-        "t2": "t2 (°C)",
-        "Tref": "Tref (°C)"
-    }
-    df.rename(columns={k:v for k,v in rename_map.items() if k in df.columns}, inplace=True)
+    df.rename(columns={"t1": "t1 (°C)", "t2": "t2 (°C)", "Tref": "Tref (°C)"}, inplace=True)
 
-def create_analysis_t_directory():
-    out_dir = os.path.join(os.getcwd(), "analysis-t")
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
-    return out_dir
 
-def make_slopes_rename_map(ref_col, sensor_col):
-    """
-    Build a dict to rename e.g. "Slope: Tref" -> "Slope: Tref (°C)", etc.
-    So final CSV has your original style headers.
-    """
-    rename_map = {
+def create_analysis_t_directory() -> str:
+    out_dir = Path(os.getcwd()) / "analysis-t"
+    out_dir.mkdir(exist_ok=True)
+    return str(out_dir)
+
+
+def make_slopes_rename_map(ref_col: str, sensor_col: str) -> Dict[str, str]:
+    """Helper for pretty column names in slopes CSV."""
+    return {
         f"Slope: {ref_col}": f"Slope: {ref_col} (°C)",
         f"Mean: {ref_col}":  f"Mean: {ref_col} (°C)",
         f"Min: {ref_col}":   f"Min: {ref_col} (°C)",
         f"Max: {ref_col}":   f"Max: {ref_col} (°C)",
-        
         f"Slope: {sensor_col}": f"Slope: {sensor_col} (°C)",
         f"Mean: {sensor_col}":  f"Mean: {sensor_col} (°C)",
         f"Min: {sensor_col}":   f"Min: {sensor_col} (°C)",
         f"Max: {sensor_col}":   f"Max: {sensor_col} (°C)",
     }
-    return rename_map
 
-def save_slopes_csv(slopes_df, sensor_id, out_dir):
-    """
-    Write slopes-*.csv with final columns named in the "original" style:
-      Slope: Tref (°C), Slope: t1 (°C), etc.
-    """
-    ref_col = "Tref"  # after internal rename
+
+def save_slopes_csv(slopes_df: pd.DataFrame, sensor_id: str, out_dir: str) -> None:
+    """Write *slopes-<sensor>.csv* with friendly column names."""
+    ref_col = "Tref"  # internal name
     out_df = slopes_df.copy()
-    
-    # rename slope columns to "Slope: Tref (°C)", etc.
-    rename_map = make_slopes_rename_map(ref_col, sensor_id)
-    out_df.rename(columns=rename_map, inplace=True)
-    
-    # reorder
-    wanted_cols = [
+    out_df.rename(columns=make_slopes_rename_map(ref_col, sensor_id), inplace=True)
+    cols = [
         "Rank",
         "Interval start (s)",
         "Interval end (s)",
@@ -279,305 +207,264 @@ def save_slopes_csv(slopes_df, sensor_id, out_dir):
         f"Min: {sensor_id} (°C)",
         f"Max: {sensor_id} (°C)",
     ]
-    out_df = out_df[wanted_cols]
-    
-    fname = f"slopes-{sensor_id}.csv"
-    outpath = os.path.join(out_dir, fname)
-    out_df.to_csv(outpath, index=False, float_format="%.6f")
+    out_df = out_df[[c for c in cols if c in out_df.columns]]
+    out_path = Path(out_dir) / f"slopes-{sensor_id}.csv"
+    out_df.to_csv(out_path, index=False, float_format="%.6f")
 
-def save_final_ranks_csv_txt(chosen_rows, sensor_id, out_dir):
+
+def save_final_ranks_csv_txt(chosen_rows: List[dict],
+                             sensor_id: str,
+                             out_dir: str) -> None:
     """
-    Save final chosen calibration points into t1-ranks.csv/.txt or t2-ranks.csv/.txt.
-    CSV:  Rank,Tref (°C),t1 (°C)
-    TXT:  Tref (°C),t1 (°C)
+    Save final plateau means for one sensor to
+    <sensor>-ranks.csv  (with Rank)  and  <sensor>-ranks.txt (without Rank).
     """
     if not chosen_rows:
         return
-    # Build DataFrame
-    data_list = []
-    for row in chosen_rows:
-        data_list.append({
-            "Rank": row["Rank"],
-            "Tref": row["Mean: Tref"],
-            sensor_id: row[f"Mean: {sensor_id}"]
-        })
-    df = pd.DataFrame(data_list)
-    # rename for final columns
-    rename_map = {
-        "Tref": "Tref (°C)",
-        sensor_id: f"{sensor_id} (°C)"
-    }
-    df.rename(columns=rename_map, inplace=True)
-    
-    # CSV
-    csv_cols = ["Rank", "Tref (°C)", f"{sensor_id} (°C)"]
-    csv_fname = f"{sensor_id}-ranks.csv"
-    df[csv_cols].to_csv(os.path.join(out_dir, csv_fname), index=False, float_format="%.6f")
-    
-    # TXT (drop rank)
-    txt_cols = ["Tref (°C)", f"{sensor_id} (°C)"]
-    txt_fname = f"{sensor_id}-ranks.txt"
-    with open(os.path.join(out_dir, txt_fname), "w", encoding="utf-8") as f:
-        f.write(",".join(txt_cols) + "\n")
-        for _, row in df.iterrows():
-            f.write(f"{row['Tref (°C)']:.6f},{row[f'{sensor_id} (°C)']:.6f}\n")
+
+    df = pd.DataFrame({
+        "Rank":            [r["Rank"]           for r in chosen_rows],
+        "Tref (°C)":       [r["Mean: Tref"]     for r in chosen_rows],
+        f"{sensor_id} (°C)": [r[f"Mean: {sensor_id}"] for r in chosen_rows],
+    })
+
+    # CSV + TXT
+    df.to_csv(Path(out_dir) / f"{sensor_id}-ranks.csv",
+              index=False, float_format="%.6f")
+    df.drop(columns=["Rank"]).to_csv(Path(out_dir) / f"{sensor_id}-ranks.txt",
+                                     index=False, float_format="%.6f")
+
 
 ###############################################################################
 # PART D) MAIN
 ###############################################################################
 
-def main():
-    i_def = 10
-    w_def = 60
-    th_def = 0.0005
-    seg_def = 5
-    
-    parser = argparse.ArgumentParser(description="Align Tref in time, then do temperature plateau detection.")
+def main() -> None:
+    i_def, w_def, th_def, seg_def = 10, 60, 5e-4, 5
 
-    parser.add_argument("-shmin", type=int, default=-300, help="Minimum shift in seconds (default=-300).")
-    parser.add_argument("-shmax", type=int, default=300, help="Maximum shift in seconds (default=300).")
-    
-    parser.add_argument("-i", "--interval", type=int, default=i_def, help=f"Sliding step in seconds (default={i_def}).")
-    parser.add_argument("-w", "--window", type=int, default=w_def, help=f"Window size in seconds (default={w_def}).")
-    parser.add_argument("-th", "--threshold", type=float, default=th_def, help=f"Max sum of abs slopes accepted (default={th_def}).")
-    parser.add_argument("-seg", "--segments", type=int, default=seg_def, help=f"Number of segments for calibration partition (default={seg_def}).")
-    
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(
+        "Align Tref, detect plateaus, create calibration.")
+    p.add_argument("-shmin", type=int, default=-300)
+    p.add_argument("-shmax", type=int, default=300)
+    p.add_argument("-i",  "--interval",  type=int, default=i_def)
+    p.add_argument("-w",  "--window",    type=int, default=w_def)
+    p.add_argument("-th", "--threshold", type=float, default=th_def)
+    p.add_argument("-seg","--segments",  type=int, default=seg_def)
+    # NEW
+    p.add_argument("-cal", metavar="SPEC",
+                   help="Calibration spec zone,num1[,num2] e.g. C3,4")
+    p.add_argument("-z", action="store_true",
+                   help="Zero time component of datetime in JSON entry")
+    args = p.parse_args()
 
-    shift_min = args.shmin
-    shift_max = args.shmax
-    interval  = args.interval
-    window    = args.window
-    threshold = args.threshold
-    segments  = args.segments
-    
-    # -------------------------------------------------------------------------
-    # 1) Find merged-*.csv
-    # -------------------------------------------------------------------------
-    def find_files_by_pattern_with_re(directory, start_str, extension):
-        matching = []
-        if not extension.startswith('.'):
-            extension = f'.{extension}'
-        import re
-        pattern = re.compile(rf"^{re.escape(start_str)}.*{re.escape(extension)}$")
-        for fn in os.listdir(directory):
-            if pattern.match(fn):
-                matching.append(os.path.join(directory, fn))
-        return matching
-
-    merged_files = find_files_by_pattern_with_re(".", "merged-", ".csv")
+    # ---------------------------------------------------------------- merged CSV
+    patt = re.compile(r"^merged-.*\.csv$")
+    merged_files = sorted([f for f in os.listdir(".") if patt.match(f)])
     if not merged_files:
-        print("No merged-*.csv found!")
-        sys.exit(1)
+        print("No merged-*.csv found!"); sys.exit(1)
     merged_filename = merged_files[-1]
-    
-    df = pd.read_csv(merged_filename, encoding="utf-8")
-    
-    # optional: reduce scientific notation in prints
-    pd.set_option("display.float_format", lambda x: f"{x:.6f}")
-    
-    # -------------------------------------------------------------------------
-    # 2) Rename columns internally if needed
-    # -------------------------------------------------------------------------
+    df = pd.read_csv(merged_filename)
+
+    # Datetime for JSON
+    cal_dt = None
+    if "Datetime" in df.columns and not df["Datetime"].empty:
+        cal_dt = str(df["Datetime"].iloc[0])
+        if args.z and cal_dt:
+            cal_dt = cal_dt[:10] + " 00:00:00"
+
+    # Column names → internal
     rename_temp_columns_in(df)
-    
-    # Must have "Time (s)", "Tref", "t1" at least
-    needed_cols = ["Time (s)", "Tref", "t1"]
-    for c in needed_cols:
-        if c not in df.columns:
-            print(f"ERROR: Missing required column '{c}'.")
-            sys.exit(1)
-    
-    has_t2 = ("t2" in df.columns)
-    
-    # We'll treat the BME sensor times as "sens_time" for alignment
-    # Because often Tref is the same time as well, but let's keep the logic consistent.
-    # For each sensor (t1, t2), we find the best shift that aligns Tref to that sensor.
-    
+    for col in ("Time (s)", "Tref", "t1"):
+        if col not in df.columns:
+            print("Missing column", col); sys.exit(1)
+    has_t2 = "t2" in df.columns
+
     ref_time = df["Time (s)"].to_numpy()
     ref_temp = df["Tref"].to_numpy()
-    
-    # -- t1 --
-    sens_time_1 = df["Time (s)"].to_numpy()  # same times if we expect identical sampling
-    sens_temp_1 = df["t1"].to_numpy()
-    best_shift_1, best_sdev_1, mask_1, shifts_1, sdevs_1 = find_best_shift(
-        sens_time_1, sens_temp_1, ref_time, ref_temp, shift_min, shift_max
-    )
-    
+
+    # ------------------------------------------------ alignment shifts
+    def handle(sensor_name):
+        sens_time = df["Time (s)"].to_numpy()
+        sens_temp = df[sensor_name].to_numpy()
+        return find_best_shift(sens_time, sens_temp,
+                               ref_time, ref_temp,
+                               args.shmin, args.shmax)
+
+    best_shift_1, best_sdev_1, mask_1, shifts_1, sdevs_1 = handle("t1")
     print(f"[t1] best shift = {best_shift_1} s, std = {best_sdev_1:.6f}")
-    
-    # possibly t2
     if has_t2:
-        sens_time_2 = df["Time (s)"].to_numpy()
-        sens_temp_2 = df["t2"].to_numpy()
-        best_shift_2, best_sdev_2, mask_2, shifts_2, sdevs_2 = find_best_shift(
-            sens_time_2, sens_temp_2, ref_time, ref_temp, shift_min, shift_max
-        )
+        best_shift_2, best_sdev_2, mask_2, shifts_2, sdevs_2 = handle("t2")
         print(f"[t2] best shift = {best_shift_2} s, std = {best_sdev_2:.6f}")
-    
-    # -------------------------------------------------------------------------
-    # 3) Plot shift vs std dev => tshift-temp.png, tshift-temp-t1.csv/t2.csv
-    # -------------------------------------------------------------------------
-    # analysis-t folder
+
+    # ------------------------------------------------ shift-vs-std plot
     out_dir = create_analysis_t_directory()
-    
     plt.figure(figsize=(6,4), dpi=300)
-    plt.plot(shifts_1, sdevs_1, marker='o', label="t1")
-    save_path = os.path.join(out_dir, "tshift-temp-t1.csv")
-    pd.DataFrame({"Shift (s)": shifts_1, "std_dev": sdevs_1}).to_csv(save_path, index=False)
-    
+    plt.plot(shifts_1, sdevs_1, marker="o", label="t1")
+    pd.DataFrame({"Shift (s)": shifts_1,
+                  "std_dev":  sdevs_1}
+                ).to_csv(Path(out_dir)/"tshift-temp-t1.csv", index=False)
     if has_t2:
-        plt.plot(shifts_2, sdevs_2, marker='x', label="t2")
-        save_path = os.path.join(out_dir, "tshift-temp-t2.csv")
-        pd.DataFrame({"Shift (s)": shifts_2, "std_dev": sdevs_2}).to_csv(save_path, index=False)
-    
+        plt.plot(shifts_2, sdevs_2, marker="x", label="t2")
+        pd.DataFrame({"Shift (s)": shifts_2,
+                      "std_dev":  sdevs_2}
+                    ).to_csv(Path(out_dir)/"tshift-temp-t2.csv", index=False)
     plt.xlabel("Shift time (s)")
-    plt.ylabel("Std of (Tref_interp - Tsensor)")
-    plt.title("Shift vs. Standard Deviation")
-    plt.legend()
-    plot_path = os.path.join(out_dir, "tshift-temp.png")
-    plt.savefig(plot_path, dpi=300)
-    plt.close()
-    
-    # -------------------------------------------------------------------------
-    # 4) Build final aligned data => talign-thp.csv
-    # -------------------------------------------------------------------------
-    # We'll keep only the overlapping region for both t1 & t2 if we have 2 sensors
-    # so that Tref is consistent. That means we combine masks if we want overlap across all.
-    # If you prefer to handle them separately, you can. Here's a single overlap approach:
-    
-    if not has_t2:
-        final_mask = mask_1
-    else:
-        # Intersection of mask_1 & mask_2 so we only keep times that exist for both
-        final_mask = mask_1 & mask_2
-    
-    aligned_time_1, aligned_temp_1, aligned_ref_1 = align_data_for_shift(
-        sens_time_1, sens_temp_1, ref_time, ref_temp, best_shift_1, final_mask
-    )
-    # For reference, we just store aligned_ref_1 as Tref
+    plt.ylabel("Std of (Tref_interp − Tsensor)")
+    plt.title("Shift vs. Std dev"); plt.legend()
+    plt.savefig(Path(out_dir)/"tshift-temp.png", dpi=300); plt.close()
+
+    # ------------------------------------------------ aligned DF
+    final_mask = mask_1 if not has_t2 else (mask_1 & mask_2)
+    al_time1, al_temp1, al_ref = align_data_for_shift(
+        df["Time (s)"].to_numpy(), df["t1"].to_numpy(),
+        ref_time, ref_temp, best_shift_1, final_mask)
+
+    data_al = {"Time (s)": al_time1, "t1": al_temp1, "Tref": al_ref}
     if has_t2:
-        aligned_time_2, aligned_temp_2, aligned_ref_2 = align_data_for_shift(
-            sens_time_2, sens_temp_2, ref_time, ref_temp, best_shift_2, final_mask
-        )
-        # This should produce the same "aligned_ref_1" and "aligned_ref_2" if the same Tref sensor,
-        # but we typically just keep one. We'll rely on aligned_time_1 as the main time axis.
-        
-        # We'll assume aligned_time_1 == aligned_time_2 if the final_mask was the same,
-        # so let's call that "aligned_time."
-        aligned_time = aligned_time_1
-        aligned_ref  = aligned_ref_1
-    else:
-        aligned_time = aligned_time_1
-        aligned_ref  = aligned_ref_1
-    
-    # Build an intermediate DataFrame for the aligned portion
-    data_al = {
-        "Time (s)": aligned_time,
-        "t1": aligned_temp_1,   # internal name
-        "Tref": aligned_ref     # internal name
-    }
-    if has_t2:
-        data_al["t2"] = aligned_temp_2
+        _, al_temp2, _ = align_data_for_shift(
+            df["Time (s)"].to_numpy(), df["t2"].to_numpy(),
+            ref_time, ref_temp, best_shift_2, final_mask)
+        data_al["t2"] = al_temp2
+
     df_aligned = pd.DataFrame(data_al)
-    
-    # Merge back with original to get Datetime,Timestamp,Measurement if needed
-    # We'll do an inner join on "Time (s)" or we might do approximate merges if times differ.
-    # For now we assume it matches exactly.
-    
-    needed_cols_extra = ["Datetime","Timestamp","Measurement"]
-    available_cols = [c for c in needed_cols_extra if c in df.columns]
-    if available_cols:
-        df_main_subset = df[["Time (s)"] + available_cols].drop_duplicates("Time (s)")
-        df_final = pd.merge(df_main_subset, df_aligned, on="Time (s)", how="inner")
-    else:
-        df_final = df_aligned
-    
-    # rename back "t1" -> "t1 (°C)", etc. for final CSV
-    rename_temp_columns_out(df_final)
-    
-    # reorder typical columns
-    out_cols = ["Datetime","Timestamp","Time (s)","Measurement","t1 (°C)","t2 (°C)","Tref (°C)"]
-    out_cols_exist = [c for c in out_cols if c in df_final.columns]
-    df_final = df_final[out_cols_exist]
-    save_path = os.path.join(out_dir, "talign-thp.csv")
-    df_final.to_csv(save_path, index=False, float_format="%.6f")
-    print("Wrote talign-thp.csv with aligned data.")
-    
-    # -------------------------------------------------------------------------
-    # 5) Perform slope detection (plateau) on the *aligned* data
-    # -------------------------------------------------------------------------
-    # We'll read it back or continue with df_final:
-    # But now we want the short internal columns again, so let's rename internally once more:
-    # You could skip re-reading from disk if you like:
-    df_slopes = df_final.copy()
-    rename_temp_columns_in(df_slopes)  # "t1 (°C)" -> "t1", etc.
-    
-    # If we do plateau detection, we need "Time (s)", "Tref", "t1" at least
-    sensor_cols = []
-    if "t1" in df_slopes.columns:
-        sensor_cols.append("t1")
-    if "t2" in df_slopes.columns:
-        sensor_cols.append("t2")
-    
-    # Plot for final
-    fig, ax = plt.subplots(figsize=(8,6), dpi=300)
-    ax.plot(df_slopes["Time (s)"], df_slopes["Tref"], label="Tref", linewidth=2)
-    
-    calibration_points = {}
-    
-    for sensor_col in sensor_cols:
-        slope_data = calc_window_slopes(df_slopes, "Time (s)", "Tref", sensor_col, interval, window)
+
+    # keep Datetime / Timestamp / Measurement if present
+    extras = [c for c in ("Datetime","Timestamp","Measurement") if c in df.columns]
+    if extras:
+        df_aligned = pd.merge(
+            df[["Time (s)"]+extras].drop_duplicates("Time (s)"),
+            df_aligned, on="Time (s)")
+
+    rename_temp_columns_out(df_aligned)
+    order = [c for c in ("Datetime","Timestamp","Time (s)","Measurement",
+                         "t1 (°C)","t2 (°C)","Tref (°C)") if c in df_aligned.columns]
+    df_aligned = df_aligned[order]
+    df_aligned.to_csv(Path(out_dir)/"talign-thp.csv",
+                      index=False, float_format="%.6f")
+
+    # ------------------------------------------------ plateau detection
+    df_slopes = df_aligned.copy(); rename_temp_columns_in(df_slopes)
+    sensor_cols = [c for c in ("t1","t2") if c in df_slopes.columns]
+
+    plt.figure(figsize=(8,6), dpi=300)
+    plt.plot(df_slopes["Time (s)"], df_slopes["Tref"],
+             label="Tref", lw=2)
+
+    calibration_points: Dict[str, List[dict]] = {}
+    for sens in sensor_cols:
+        slope_data = calc_window_slopes(df_slopes, "Time (s)", "Tref",
+                                        sens, args.interval, args.window)
         slope_df = pd.DataFrame(slope_data)
         if slope_df.empty:
-            print(f"No slope results for {sensor_col}. Skipping.")
-            continue
-        
-        # sort ascending by sum of abs slope
+            print(f"No slope results for {sens}"); continue
         slope_df.sort_values("Sum of abs(slope)", inplace=True)
         slope_df.reset_index(drop=True, inplace=True)
         slope_df["Rank"] = slope_df.index + 1
-        
-        # Save slopes-*.csv
-        slope_df["Interval end (s)"] = slope_df["Interval end (s)"] - 1
-        save_slopes_csv(slope_df, sensor_col, out_dir)
-        slope_df["Interval end (s)"] = slope_df["Interval end (s)"] + 1
-        
-        
-        
-        # pick calibration points
-        chosen = partition_calibration_points(slope_df, "Tref", sensor_col, threshold, segments)
-        save_final_ranks_csv_txt(chosen, sensor_col, out_dir)
-        calibration_points[sensor_col] = chosen
-        
-        # plot sensor
-        ax.plot(df_slopes["Time (s)"], df_slopes[sensor_col], label=sensor_col)
-    
-    # Add T-bars from Tref to sensor
-    for sensor_col, rows in calibration_points.items():
+
+        # CSV of slopes
+        save_slopes_csv(slope_df.copy(), sens, out_dir)
+
+        chosen = partition_calibration_points(
+            slope_df, "Tref", sens, args.threshold, args.segments)
+        calibration_points[sens] = chosen
+
+        save_final_ranks_csv_txt(chosen, sens, out_dir)
+        plt.plot(df_slopes["Time (s)"], df_slopes[sens], label=sens)
+
+    # draw plateau bars
+    ax = plt.gca()
+    for sens, rows in calibration_points.items():
         for row in rows:
-            x = 0.5*(row["Interval start (s)"] + row["Interval end (s)"])
-            tref_val = row["Mean: Tref"]
-            tsen_val = row[f"Mean: {sensor_col}"]
-            arr = mpatches.FancyArrowPatch(
-                (x, tref_val), (x, tsen_val),
-                arrowstyle='|-|',
-                color='gray',
-                mutation_scale=15,
-                lw=1.2
-            )
-            ax.add_patch(arr)
-    
+            x_mid = 0.5 * (row["Interval start (s)"] + row["Interval end (s)"])
+            ax.add_patch(
+                mpatches.FancyArrowPatch(
+                    (x_mid, row["Mean: Tref"]),
+                    (x_mid, row[f"Mean: {sens}"]),
+                    arrowstyle="|-|", color="gray", lw=1))
+
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Temperature (°C)")
-    ax.set_title("Aligned Temperature Data + Plateau Detection")
-    ax.legend()
-    
-    plot_path = os.path.join(out_dir, "temp_plateaus.png")
-    plt.savefig(plot_path, dpi=300)
-    plt.close()
-    
-    print("Done! All plateau results and plots are in the 'analysis-t' folder.")
+    ax.set_title("Aligned data + plateaus")
+    ax.legend(); plt.tight_layout()
+    plt.savefig(Path(out_dir)/"temp_plateaus.png", dpi=300); plt.close()
 
+    # ------------------------------------------------ regression + JSON
+    print("Regression on chosen plateaus …")
+    json_results: Dict[int, Dict[str, Dict[str, Any]]] = {}
+
+    # sensor-code map from -cal
+    sensor_code_map: Dict[str, str] = {}
+    if args.cal:
+        try:
+            zone, num1, num2 = parse_zone_numbers(args.cal)
+            if num1 is not None:
+                sensor_code_map["t1"] = sensor_code_map["t1 (°C)"] = f"{zone}{num1}"
+            if has_t2 and num2 is not None:
+                sensor_code_map["t2"] = sensor_code_map["t2 (°C)"] = f"{zone}{num2}"
+        except Exception as e:
+            print("Invalid -cal spec:", e); args.cal = None
+
+    def regress_sensor(sens: str, rows: List[dict]) -> None:
+        if not rows:
+            return
+        x = np.array([r[f"Mean: {sens}"] for r in rows])
+        y = np.array([r["Mean: Tref"] for r in rows])
+        lr = linregress(x, y)
+        r2 = lr.rvalue ** 2
+        print(f"  {sens} → slope={lr.slope:.5f}  intercept={lr.intercept:.3f}  "
+              f"R²={r2:.6f}  N={len(x)}")
+
+        # scatter + fit plot
+        fig, ax = plt.subplots(figsize=(6,6), dpi=300)
+        ax.scatter(x, y, label="data", s=18)
+        xr = np.array([x.min()-1, x.max()+1])
+        fit_label = f"y = {lr.slope:.4f}x + {lr.intercept:.4f}\nR² = {r2:.6f}"
+        ax.plot(xr, lr.slope*xr + lr.intercept, label=fit_label)
+        ax.set_xlabel(f"{sens} (°C)")
+        ax.set_ylabel("Tref (°C)")
+        ax.set_title("Temperature regression")
+        ax.grid(True, ls=":"); ax.legend(); ax.set_aspect("equal")
+        plt.tight_layout()
+        plt.savefig(Path(out_dir)/f"{sens}_tref_regression.png", dpi=300)
+        plt.close(fig)
+
+        # TXT summary
+        with open(Path(out_dir)/f"{sens}_tref_regression.txt", "w",
+                  encoding="utf-8") as fh:
+            fh.write(
+                "Linear Regression Results\n"
+                f"  y = {lr.slope:.6f}x + {lr.intercept:.6f}\n"
+                f"  R-squared: {r2:.6f}\n"
+                f"  N: {len(x)}\n"
+            )
+
+        # JSON entry
+        num = 1 if sens == "t1" else 2
+        sensor_code = sensor_code_map.get(sens, f"S{num}")
+        json_results.setdefault(num, {}).setdefault(sensor_code, {})["T"] = {
+            "datetime": cal_dt or datetime.now().
+                        strftime("%Y-%m-%d %H:%M:%S"),
+            "label":    "Temperature",
+            "name":     sens,
+            "col":      sens + " (°C)" if not sens.endswith("°C)") else sens,
+            "slope":    lr.slope,
+            "constant": lr.intercept,
+            "r2":       r2,
+        }
+
+    for sens in sensor_cols:
+        regress_sensor(sens, calibration_points.get(sens, []))
+
+    if args.cal and json_results:
+        json_path, exists = find_thpcal_json()
+        cal_dict = read_thpcal_json(json_path) if exists else {}
+        cal_dict = merge_thpcal(cal_dict, json_results)
+        write_thpcal_json(json_path, cal_dict)
+        print(f"Calibration dictionary updated → {json_path}")
+
+    print("Done – results saved in", out_dir)
+
+
+###############################################################################
 if __name__ == "__main__":
     main()
