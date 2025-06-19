@@ -9,7 +9,9 @@ Created on Wed Jun  4 10:41:43 2025
 # Standard library imports
 # ---------------------------------------------------------------------------
 import argparse                      # ADDED: command‑line argument parsing
+import csv
 import datetime
+import json
 import glob
 import os
 import re
@@ -22,9 +24,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from typing import Dict, Any
+from typing import Tuple
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
+# Caldict additions
+# Own library imports
+from thpcaldb import parse_zone_numbers
 
 
 def find_latest_merged_csv():
@@ -71,7 +78,17 @@ def read_and_filter_data(file_path):
     """
     df = pd.read_csv(file_path)
     df_filtered = df[['Time (s)','Measurement', 'RH1% (%)', 'RH2% (%)', 'RHref (%RH)']]
-    return df_filtered
+    
+    # Caldict addition
+    date_time = None
+    try:
+        date_time = df['Datetime'][0]
+    except:
+        print('Invalid log format. Datetime value not found in the first data row.')
+        
+    
+    # return df_filtered
+    return date_time, df_filtered
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +212,111 @@ def plot_calib(x_test: np.ndarray,
     print(f'→ saved plot to {out_png}')
 
 
+# ---------------------------------------------------------------------------
+# Calibration dict: Helper functions
+# ---------------------------------------------------------------------------
+def _convert_value(val: str) -> Any:
+    """
+    Try to convert to float; otherwise leave as string.
+    """
+    try:
+        return float(val)
+    except ValueError:
+        return val
+
+
+def find_thpcal_json() -> Tuple[str, bool]:
+    """
+    Search for 'thpcal.json' in:
+      1. current directory
+      2. parent directory
+      3. /opt/tools
+    If found, prints where and returns (filepath, True).
+    If not found, constructs a new path in the current directory,
+    prints that, and returns (new_filepath, False).
+    """
+    filename = 'thpcal.json'
+    search_dirs = [
+        os.getcwd(),
+        os.path.abspath(os.path.join(os.getcwd(), os.pardir)),
+        '/opt/tools'
+    ]
+
+    for directory in search_dirs:
+        path = os.path.join(directory, filename)
+        if os.path.isfile(path):
+            print("Calibration file thpcal.json found: " + directory)
+            return path, True
+
+    # Not found → default to current dir
+    new_path = os.path.join(os.getcwd(), filename)
+    print("Path to the new calibration file thpcal.json: " + os.getcwd())
+    return new_path, False
+
+
+def read_thpcal_json(
+    filename: str
+) -> Dict[int, Dict[str, Dict[str, Any]]]:
+    """
+    Reads a JSON file (e.g. "thpcal.json") into a nested dict of the form:
+      { number: { sensor_name: { type_key: info_dict, ... }, ... }, ... }
+    
+    Outer keys in JSON must be strings (per JSON spec), 
+    so we convert them back to ints here.
+    """
+    with open(filename, 'r', encoding='utf-8') as f:
+        raw = json.load(f)
+
+    # Convert top-level keys from str→int
+    cal: Dict[int, Dict[str, Dict[str, Any]]] = {
+        int(number): sensors
+        for number, sensors in raw.items()
+    }
+    return cal
+
+
+def read_and_merge_thpcal_json(
+    filename: str,
+    new_entries: Dict[int, Dict[str, Dict[str, Any]]]
+) -> Dict[int, Dict[str, Dict[str, Any]]]:
+    """
+    1) Reads existing JSON as above,
+    2) Updates (overwrites) or adds any entries in `new_entries`
+    3) Returns the merged dict.
+    """
+    try:
+        cal = read_thpcal_json(filename)
+    except:
+        print('Creating a new thpcal.json file.')
+        return new_entries
+    
+    for num, sensors in new_entries.items():
+        cal.setdefault(num, {})
+        for sensor, types in sensors.items():
+            cal[num].setdefault(sensor, {})
+            for t, info in types.items():
+                cal[num][sensor][t] = info
+    print(f'merged new data with existing data')
+    return cal
+
+
+def write_thpcal_json(
+    filename: str,
+    cal_dict: Dict[int, Dict[str, Dict[str, Any]]]
+) -> None:
+    """
+    Writes out the nested dict to a JSON file.
+    Converts the outer integer keys to strings (required by JSON),
+    and then pretty-prints with indentation.
+    """
+    # Convert int keys → str so JSON object is valid
+    raw = {str(number): sensors for number, sensors in cal_dict.items()}
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+    print(f'→ saved thpcal.json')
+
+
 def main():
     
     """Main entry point.
@@ -214,6 +336,10 @@ def main():
     parser.add_argument('-e', '--end',   type=float, metavar='SEC', help='Clip *end* time in seconds (further restrict).')
     parser.add_argument('-n', action='store_true', help='Do NOT create graphs.')
     parser.add_argument('-N', action='store_true', help='Do NOT create graphs or analysis files.')
+    # Calibration dict: additions
+    parser.add_argument("-cal", type=str, help="Calibration spec zone,num1[,num2] e.g. -cal C11,12")
+    parser.add_argument('-z', action='store_true', help='Remove time from datetime (→ 00:00:00).')
+    
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -235,7 +361,7 @@ def main():
     # ------------------------------------------------------------------
     # 2.  Read & optionally restrict by -s / -e
     # ------------------------------------------------------------------
-    df = read_and_filter_data(merged_csv_path)
+    _, df = read_and_filter_data(merged_csv_path)
 
     # Translate -s / -e (seconds) into *indices* using the Time (s) column
     # They may only *reduce* the default span, never extend it.
@@ -271,11 +397,12 @@ def main():
         print('Merge file not found.')
         sys.exit()
 
-    # 3) Read/Filter rh_analysis.csv
-    df = read_and_filter_data(merged_csv_path)
+    # 3) Read/Filter merged-*.csv
+    #- df = read_and_filter_data(merged_csv_path)
+    dt, df = read_and_filter_data(merged_csv_path)
     length = len(df)
     x_end = len(df)
-    
+      
     # 4) Determine sensor count
     ref_col = ''
     if 'RHref (%RH)' in df.columns:
@@ -303,10 +430,12 @@ def main():
         },
         {
             "role":  "measure",
+            "type" : "H",
+            "sensor": "",
+            "label": "Relative humidity",
             "name":  "RH1%",
             "col":   "RH1% (%)",
             "data": [],
-            "median": -1,
             "start": -1,
             "end": -1,
             "col_idx": sensor_col1,
@@ -314,10 +443,12 @@ def main():
         },
         {
             "role":  "measure",
+            "type" : "H",
+            "sensor": "",
+            "label": "Relative humidity",
             "name":  "RH2%",
             "col":   "RH2% (%)",
             "data": [],
-            "median": -1,
             "start": -1,
             "end": -1,
             "col_idx": sensor_col2,
@@ -325,10 +456,26 @@ def main():
         },
     ]
 
+
+    # Calibration dict: additions
+    if dt is not None:
+        if args.z:
+            str_len = len('2000-01-01 23:59:59')
+            date_len = len('2000-01-01')           
+            dt = dt[:date_len] + ' 00:00:00'
+
+    if args.cal:
+        zone, num1, num2 = parse_zone_numbers(args.cal)
+        if num1 and has_sensor1:
+            sensors[1]["sensor"] = zone + str(num1)
+        if num2 and has_sensor2:
+            sensors[2]["sensor"] = zone + str(num2)
+                
+
     if has_sensor1:
-        sensors[1]["data"]= np.array(df.iloc[:, sensor_col1])
+        sensors[1]["data"] = np.array(df.iloc[:, sensor_col1])
     if has_sensor2:
-        sensors[2]["data"]= np.array(df.iloc[:, sensor_col2])
+        sensors[2]["data"] = np.array(df.iloc[:, sensor_col2])
 
 
     # Minium and maximum allowed sensor values
@@ -352,6 +499,10 @@ def main():
             sensors[0]['end'] = len(refs)
     sensors[0]['start'] = x_start
 
+
+    # Create a results dict
+    results = {}
+
     # Loop trough sensors
     i = 1
     while i <= 2:
@@ -360,7 +511,19 @@ def main():
             i += 1
             continue
 
-        print("")    
+        print("")
+        results.update({i: {sensors[i]['sensor']:
+                       {sensors[i]['type']:
+                       {'datetime' : dt,
+                        'label': sensors[i]['label'],
+                        'name': sensors[i]['name'],
+                        'col': sensors[i]['col'],
+                        'slope': -1,
+                        'constant': -1,
+                        'r2': -1
+                        }}}})
+        
+        
         # Determine valid ranges
         sensors[i]['start'] = 0
         if is_drying:
@@ -404,14 +567,20 @@ def main():
         ys = refs[x0:x1]
         
         mdl, Xte, yte, yhat, stats = run_regression(xs, ys)
-               
+
+        # Calibration dict: additions
+        # Add results in corresponding dictionary
+        results[i][sensors[i]['sensor']][sensors[i]['type']]['slope'] = stats['slope']
+        results[i][sensors[i]['sensor']][sensors[i]['type']]['constant'] = stats['intercept']
+        results[i][sensors[i]['sensor']][sensors[i]['type']]['r2'] = stats['r2']
+                       
         # -----------------------------------------------------------------
         # 5.  Reporting & optional file output
         # -----------------------------------------------------------------
         sensor_label = sensors[i]['name']
         report_regression(stats, sensor_label, merged_csv_path,
                               save_to_file= not (args.N))
-
+                
         # -----------------------------------------------------------------
         # 6.  Optional graph generation
         # -----------------------------------------------------------------
@@ -420,7 +589,28 @@ def main():
                    make_graph=not (args.n or args.N))        
 
         i += 1
-   
+    
+    # Calibration dict: additions
+    if not args.N:
+        # -----------------------------------------------------------------
+        # 7. Create/update a local calibration dictionary file
+        # -----------------------------------------------------------------
+        print("")
+        
+        # Try to locate thpcal.json
+        json_path, is_json = find_thpcal_json()
+        
+        # Read current calibration file
+        # 7.1) merge with what's on disk
+        if is_json:
+            cal = read_and_merge_thpcal_json(json_path, results)
+        else:
+            cal = results
+        
+        # 7.2) write back out
+        write_thpcal_json(json_path, cal)
+    
+    print("")
 
 if __name__ == '__main__':
     main()
