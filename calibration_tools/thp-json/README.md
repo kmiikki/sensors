@@ -5,8 +5,7 @@ This folder contains the JSON-based calibration infrastructure used by all
 
 ```
 
-calibration\_tools/
-└── thp-json/
+calibration_tools/thp-json/
 ├── thpcaldb.py   ← lightweight helper module
 └── README.md     ← you are here
 
