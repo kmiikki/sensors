@@ -21,6 +21,7 @@ Created on Wed Aug 21 12:17:22 2024 (updated 2025)
 
 import argparse
 import board
+import json
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -74,7 +75,7 @@ This row limitation guarantees sufficient memory for each measurement for
 COOLDOWN_DURATION = 3600.0  # 1 hour in seconds
 
 # Program version
-version = 2.2
+version = 2.3
 
 # Relay pins
 relay_pin_list = [21, 20]
@@ -263,20 +264,89 @@ def parse_arguments():
             script_dir = os.path.dirname(__file__)
             db_file = os.path.join(script_dir, "calibration.db")
 
+            # ---------- JSON first ----------
+            json_path, json_ok = _find_thpcal_json()
+            json_dict = _read_thpcal_json(json_path) if json_ok else None
+
+            def _json_cal(num: int | None):
+                if json_dict is None or num is None:
+                    return None
+                for blk in json_dict.values():
+                    rec = blk.get(f"{zone}{num}")
+                    if rec:
+                        return _JsonCal(rec, f"{zone}{num}", json_path)
+                return None
+
+            # Sensor 1
             if num1:
-                sensor_cals[0] = Calibration(db_file, zone, num1)
-                if sensor_cals[0] is not None:
-                    print(f"Sensor {zone}{num1} calibrations in use for sensor #1. Available types: {list(sensor_cals[0]._cal_data.keys())}")
-                else:
-                    print(f"No calibration found for {zone}{num1} (sensor #1).")
+                sensor_cals[0] = _json_cal(num1) or Calibration(db_file, zone, num1)
+                if sensor_cals[0]:
+                    src = "thpcal.json" if getattr(sensor_cals[0], "_from_json", False) else "database"
+                    print(f"Sensor {zone}{num1} calibrations from {src} for sensor #1. "
+                          f"Types: {list(sensor_cals[0]._cal_data.keys())}")
+            # Sensor 2
             if num2:
-                sensor_cals[1] = Calibration(db_file, zone, num2)
-                if sensor_cals[1] is not None:
-                    print(f"Sensor {zone}{num2} calibrations in use for sensor #2. Available types: {list(sensor_cals[1]._cal_data.keys())}")
-                else:
-                    print(f"No calibration found for {zone}{num2} (sensor #2).")
+                sensor_cals[1] = _json_cal(num2) or Calibration(db_file, zone, num2)
+                if sensor_cals[1]:
+                    src = "thpcal.json" if getattr(sensor_cals[1], "_from_json", False) else "database"
+                    print(f"Sensor {zone}{num2} calibrations from {src} for sensor #2. "
+                          f"Types: {list(sensor_cals[1]._cal_data.keys())}")
+
             if num1 or num2:
                 print("")
+
+
+# --------------------------------------------------------------------
+# thpcal.json helpers (shared convention with the CLI tools)
+# --------------------------------------------------------------------
+def _find_thpcal_json() -> tuple[Path, bool]:
+    """Search cwd → parent → /opt/tools for *thpcal.json*."""
+    name = "thpcal.json"
+    for d in (Path.cwd(), Path.cwd().parent, Path("/opt/tools")):
+        p = d / name
+        if p.is_file():
+            return p, True
+    return Path.cwd() / name, False
+
+
+def _read_thpcal_json(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    return {int(k): v for k, v in raw.items()}
+
+
+class _JsonCal:
+    """
+    Lightweight wrapper so JSON records behave like thpcaldb.Calibration:
+      • ._cal_data  – {label → {slope, const, cal_id}}
+      • .get_calibrated_value(raw, label)
+    """
+    __slots__ = ("_cal_data", "_from_json", "_json_path")
+
+    def __init__(self, entry: dict, sensor_code: str, json_path: Path):
+        self._cal_data = {}
+        for key in ("T", "H", "RH", "P"):
+            if key not in entry:
+                continue
+            meas_code = "RH" if key in ("H", "RH") else key      # normalise
+            data      = entry[key]
+            label     = {"T": "Temperature",
+                         "RH": "Relative Humidity",
+                         "P": "Pressure"}[meas_code]
+            self._cal_data[label] = {
+                "slope": data["slope"],
+                "const": data.get("constant", data.get("const", 0.0)),
+                "cal_id": f"json:{sensor_code}",
+            }
+        self._from_json = True
+        self._json_path = json_path
+
+    # --- API compatibility -------------------------------------------------
+    def get_calibrated_value(self, raw: float, label: str) -> float:
+        item = self._cal_data.get(label)
+        if item is None:
+            return raw
+        return raw * item["slope"] + item["const"]
 
 
 # ------------------------------
