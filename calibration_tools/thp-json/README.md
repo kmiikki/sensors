@@ -83,7 +83,7 @@ SQLite database (analysis scripts still *write* a new JSON).
 
 | Tool / Script                                                   | What happens with `-cal Z,N1[,N2]`                                                                                                                                                        |
 | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ** `t-analysis.py`, `rh-analysis.py`, `rh-linreg.py`, `thp-t-flats.py`** | Results are merged **into** `thpcal.json` (creating or updating the `"T"` / `"RH"` blocks).                                                                                               |
+| **`t-analysis.py`, `rh-analysis.py`, `rh-linreg.py`, `thp-t-flats.py`** | Results are merged **into** `thpcal.json` (creating or updating the `"T"` / `"RH"` blocks).                                                                                               |
 | **`thp-calibrate.py`**                                          | *Per sensor*: if **any** entry for that sensor exists in JSON, **all** JSON values are used; otherwise the legacy SQLite database supplies all types.                                     |
 | **`bme280logger-v2.py`**                                        | Same rule as `thp-calibrate.py` – JSON first, DB only if the sensor is absent from the file. Logger prints the source (“thpcal.json” or “database”) and the calibrated types on start-up. |
 
