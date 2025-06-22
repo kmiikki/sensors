@@ -70,8 +70,3 @@ This runs the regression on the most recent merged file using data from 300 s to
 ## Author
 
 Kim Miikki, 2025
-
----
-
-For more information, see the script source: [`rh-linreg.py`](rh-linreg.py)
-
