@@ -1,0 +1,7 @@
+[Exclude]
+CS50x/
+project.py
+test_project.py
+
+[Include]
+thp_db.sql
