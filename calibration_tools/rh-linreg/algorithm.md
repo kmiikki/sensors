@@ -4,7 +4,7 @@
 
 ## 1. Purpose
 
-`rh-linreg.py` automates the linear calibration of one or two **BME280** humidity sensors (`RH1%`, `RH2%`) against a laboratory reference sensor recorded as ``.  The script discovers the latest merged data file, fits a linear model (`y = ax + b`) for each active sensor with a reproducible 70 / 30 train‑test split, evaluates goodness of fit, produces human‑ and machine‑readable artefacts, and keeps a consolidated calibration dictionary (`thpcal.json`).
+`rh-linreg.py` automates the linear calibration of one or two **BME280** humidity sensors (`RH1%`, `RH2%`) against a laboratory reference sensor recorded as **RHref (%RH)**.  The script discovers the latest merged data file, fits a linear model (`y = ax + b`) for each active sensor with a reproducible 70 / 30 train‑test split, evaluates goodness of fit, produces human‑ and machine‑readable artefacts, and keeps a consolidated calibration dictionary (`thpcal.json`).
 
 ## 2. Core Features
 
