@@ -34,9 +34,18 @@ def _read_pysdeploy_list() -> tuple[set[str], set[str], set[str]]:
     """Return (include_files, exclude_dirs, exclude_files) parsed from
     *pysdeploy.lst*.  Lines outside [Include]/[Exclude] are ignored."""
     include_files, exclude_dirs, exclude_files = set(), set(), set()
-    lst = Path("pysdeploy.lst")
+    
+    # Get current path
+    cwd = Path.cwd()
+    dirs = [cwd, '/opt/tools/']
+    for d in dirs:
+        lst = Path(os.path.join(d, 'pysdeploy.lst'))
+        if lst.is_file():
+            break
     if not lst.is_file():
         return include_files, exclude_dirs, exclude_files
+    else:
+        print(f'Using: {lst}')
 
     section = None
     for raw in lst.read_text(encoding="utf-8").splitlines():
