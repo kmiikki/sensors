@@ -535,6 +535,8 @@ def main():
 
     # 3) Read/Filter rh_analysis.csv and build calibration timestamp
     cal_dt, df = read_and_filter_data(merged_csv_path)
+    # Remove nan rows
+    df.dropna(inplace=True)
     length = len(df)
     if args.z and cal_dt:
         cal_dt = cal_dt[:10] + " 00:00:00"
