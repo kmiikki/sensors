@@ -75,7 +75,7 @@ This row limitation guarantees sufficient memory for each measurement for
 COOLDOWN_DURATION = 3600.0  # 1 hour in seconds
 
 # Program version
-version = 2.3
+version = 2.4
 
 # Relay pins
 relay_pin_list = [21, 20]
@@ -628,11 +628,16 @@ def plot_calibration_graphs():
     Generates calibration plots if calibration data is available.
     """
     print("Generating calibration plots...")
-    cal_dir = os.path.join(base_dir if base_dir else os.getcwd(),"cal")
-    if not os.path.exists(cal_dir):
-        os.makedirs(cal_dir)
     
-    base_path = os.path.join(os.getcwd(), cal_dir)
+    # Decide the root directory
+    data_root = base_dir or os.getcwd()
+    if is_subdir:                        # ­-s flag
+        data_root = os.path.join(data_root, log.dt_part)
+
+    cal_dir = os.path.join(data_root, "cal")
+    os.makedirs(cal_dir, exist_ok=True)
+    
+    base_path = cal_dir                 # no extra os.getcwd()!
     prefix = f"{log.dt_part}-" if log.ts_prefix else ""
     
     memdata_t = memdata.T
@@ -685,6 +690,38 @@ def plot_calibration_graphs():
                 )
 
 
+# ------------------------------------------------------------------
+#  helpers for run-time choice between raw / calibrated columns
+# ------------------------------------------------------------------
+def _header_label(meas: str, s: int, sensor_cal_types: list[list[str]]) -> str:
+    """Return correct legend text for *meas* of sensor *s* (0-based)."""
+    base = {"Temperature": "T", "Relative Humidity": "RH", "Pressure": "P"}[meas]
+    suffix = '%' if meas == 'Relative Humidity' else ''
+    if meas in sensor_cal_types[s]:
+        return f"{base}cal{s+1}{suffix}"
+    return f"{base.lower() if meas!='Pressure' else 'p'}{s+1}{suffix}"
+
+
+def _column_index(meas: str, s: int, sensor_cal_types: list[list[str]], scount: int) -> int:
+    """
+    Return row index in memdata_t for *meas* of sensor *s* (0-based), choosing the
+    calibrated column if available, otherwise the raw column.
+    """
+    # raw offsets (after timestamp, secs, N):   T   RH    P
+    raw_idx = 3 + s*3 + {"Temperature": 0, "Relative Humidity": 1, "Pressure": 2}[meas]
+
+    if meas not in sensor_cal_types[s]:           # no calibration – use raw
+        return raw_idx
+
+    # --- calibrated columns start here ---
+    col = 3 + 3*scount          # first calibration column
+    for j in range(s):          # skip sensors before *s*
+        col += len(sensor_cal_types[j])
+    # now add offset inside this sensor’s calib list
+    col += sensor_cal_types[s].index(meas)
+    return col
+
+
 # ------------------------------
 # SIGNAL HANDLER
 # ------------------------------
@@ -735,9 +772,24 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
     #   - If sensor 1 is also calibrated => next column after that
     #
 
-    t_indexes = [(3 + i * 3) for i in range(sensor_count)]
-    rh_indexes = [(3 + i * 3 + 1) for i in range(sensor_count)]
-    p_indexes = [(3 + i * 3 + 2) for i in range(sensor_count)]
+    # --- decide, for every sensor/measurement, which column to plot ---
+    t_indexes  = []
+    rh_indexes = []
+    p_indexes  = []
+    t_labels   = []
+    rh_labels  = []
+    p_labels   = []
+
+    for i in range(sensor_count):
+        for meas, lst_idx, lst_lbl in [("Temperature", t_indexes, t_labels),
+                                       ("Relative Humidity", rh_indexes, rh_labels),
+                                       ("Pressure", p_indexes, p_labels)]:
+            lst_idx.append(
+                _column_index(meas, i, sensor_cal_types, sensor_count)
+            )
+            lst_lbl.append(
+                _header_label(meas, i, sensor_cal_types)
+            )
 
     # ------------------------------
     # BASIC GRAPHS
@@ -748,19 +800,19 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
             # Temperature
             create_graph_1(
                 xs, memdata_t[t_indexes[i]],
-                x_label, f"Temperature{i+1} (°C)",
+                x_label, f"{t_labels[i]} (°C)",
                 f"{base_path}{prefix}fig{i+1}-single-t.png"
             )
             # Humidity (raw or cal)
             create_graph_1(
                 xs, memdata_t[rh_indexes[i]],
-                x_label, f"Relative Humidity {i+1} (RH%)",
+                x_label, f"{rh_labels[i]} (RH%)",
                 f"{base_path}{prefix}fig{i+1}-single-h.png"
             )
             # Pressure
             create_graph_1(
                 xs, memdata_t[p_indexes[i]],
-                x_label, f"Pressure{i+1} (hPa)",
+                x_label, f"{p_labels[i]} (hPa)",
                 f"{base_path}{prefix}fig{i+1}-single-p.png"
             )
 
@@ -774,7 +826,8 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         t_diff21 = memdata_t[t_indexes[1]] - memdata_t[t_indexes[0]]
         create_graph_1(
             xs, t_diff21,
-            x_label, "T2 - T1 (°C)",
+            x_label,
+            f"{t_labels[1]} - {t_labels[0]} (°C)",
             f"{base_path}{prefix}fig-diff-t21.png"
         )
 
@@ -782,7 +835,8 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         rh_diff21 = memdata_t[rh_indexes[1]] - memdata_t[rh_indexes[0]]
         create_graph_1(
             xs, rh_diff21,
-            x_label, "RH2% - RH1%",
+            x_label,
+            f"{rh_labels[1]} - {rh_labels[0]}",
             f"{base_path}{prefix}fig-diff-rh21.png"
         )
 
@@ -790,7 +844,8 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         p_diff21 = memdata_t[p_indexes[1]] - memdata_t[p_indexes[0]]
         create_graph_1(
             xs, p_diff21,
-            x_label, "p2 - p1 (hPa)",
+            x_label,
+            f"{p_labels[1]} - {p_labels[0]} (hPa)",
             f"{base_path}{prefix}fig-diff-p21.png"
         )
 
@@ -799,7 +854,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_2(
             xs,
             memdata_t[t_indexes[0]], memdata_t[t_indexes[1]],
-            "t1", "t2",
+            t_labels[0], t_labels[1],
             x_label, "Temperature (°C)",
             f"{base_path}{prefix}fig-pair-t12.png"
         )
@@ -807,7 +862,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_2(
             xs,
             memdata_t[rh_indexes[0]], memdata_t[rh_indexes[1]],
-            "RH1%", "RH2%",
+            rh_labels[0], rh_labels[1],
             x_label, "Relative Humidity (%)",
             f"{base_path}{prefix}fig-pair-rh12.png"
         )
@@ -815,7 +870,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_2(
             xs,
             memdata_t[p_indexes[0]], memdata_t[p_indexes[1]],
-            "p1", "p2",
+            p_labels[0], p_labels[1],
             x_label, "Pressure (hPa)",
             f"{base_path}{prefix}fig-pair-p12.png"
         )
@@ -824,7 +879,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_combo(
             xs,
             memdata_t[t_indexes[0]], memdata_t[rh_indexes[0]],
-            "T1", "RH1%",
+            t_labels[0], rh_labels[0],
             x_label,
             "Temperature (°C)", "RH% (%)",
             "r", "b",
@@ -833,7 +888,7 @@ def SignalHandler_SIGINT(SignalNumber, Frame):
         create_graph_combo(
             xs,
             memdata_t[t_indexes[1]], memdata_t[rh_indexes[1]],
-            "T2", "RH2%",
+            t_labels[1], rh_labels[1],
             x_label,
             "Temperature (°C)", "RH% (%)",
             "r", "b",
