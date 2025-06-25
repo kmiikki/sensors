@@ -362,6 +362,9 @@ def main():
     # 2.  Read & optionally restrict by -s / -e
     # ------------------------------------------------------------------
     _, df = read_and_filter_data(merged_csv_path)
+    
+    # Remove nan rows
+    df.dropna(inplace=True)
 
     # Translate -s / -e (seconds) into *indices* using the Time (s) column
     # They may only *reduce* the default span, never extend it.
@@ -400,6 +403,8 @@ def main():
     # 3) Read/Filter merged-*.csv
     #- df = read_and_filter_data(merged_csv_path)
     dt, df = read_and_filter_data(merged_csv_path)
+    
+    df.dropna(inplace=True)
     length = len(df)
     x_end = len(df)
       
