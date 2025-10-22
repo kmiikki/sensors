@@ -38,7 +38,7 @@ The code can be used as a starting point for any data acquisition system
 Run the skeleton directly to test basic functionality:
 
 ```bash
-python datalogger-stem.py run --interval 1.0 --base-dir data --prefix test
+python datalogger-stem.py --interval 1.0 --base-dir data --prefix test
 ````
 
 This creates a time-stamped directory such as:
@@ -120,7 +120,7 @@ cd sensors/datalogger-stem
 ### 2️⃣ Run the logger
 
 ```bash
-python datalogger-stem.py run --interval 1.0 --base-dir data --prefix test
+python datalogger-stem.py --interval 1.0 --base-dir data --prefix test
 ```
 
 The program creates a new time-stamped subdirectory inside `data/`,
