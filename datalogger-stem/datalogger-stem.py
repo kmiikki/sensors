@@ -14,10 +14,8 @@ Principles
 
 Usage
 -----
-$ python datalogger-stem.py run --interval 1.0 --base-dir data --prefix data \
+$ python datalogger-stem.py --interval 1.0 --base-dir data --prefix data \
     --csv-sep "," --err-csv-sep ", " --decimals 3
-
-$ python datalogger-stem.py version
 
 Author: Kim Miikki (original) + small cleanups
 License: MIT
@@ -60,15 +58,14 @@ def format_pretty(data: Iterable[float], decimals: int) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Time alignment and drift-free scheduling
 # ──────────────────────────────────────────────────────────────────────────────
-def get_sec_fractions(k: int) -> int:
+def get_sec_fractions(resolution=5) -> float:
     """
-    Return the fractional part of the current second as an integer in [0, 10^k - 1].
-    e.g., k=3 -> milliseconds 0..999; k=4 -> 100 µs bins 0..9999.
+    Returns the fractional part of the current second, 
+    rounded to 'resolution' decimal places.
+    Useful for waiting until the next full second to start logging.
     """
     now = datetime.now()
-    frac = now.microsecond / 1_000_000.0  # 0..1
-    return int(round(frac * (10**k))) % (10**k)
-
+    return round(now.timestamp() % 1, resolution)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Signal handling (finish current cycle before stopping)
@@ -121,13 +118,18 @@ def run_logger(
 
     Returns 0 on normal stop; non-zero on fatal error.
     """
+    
+    global disable_halt
+    
     install_signal_handlers_once()
 
-    # Align start so that sub-second fraction hits zero (k=4 ~ 100 µs bins)
+    # Wait until next full second
+    print("Synchronizing time.")
     while get_sec_fractions(4) != 0:
-        sleep(0.0005)
-
+        pass
+    next_deadline = perf_counter()
     ts_start = int(time.time())
+    
     data_log = DataLog(
         timestamp=ts_start,
         file_path=base_dir,
@@ -150,8 +152,6 @@ def run_logger(
     header = ["ts"]
     data_log.write(header)
 
-    # Drift-minimized scheduling
-    next_deadline = perf_counter()
     measurement_index = 0
     rows = 0
 
@@ -161,12 +161,8 @@ def run_logger(
                 # Not in the middle of a measurement -> stop cleanly
                 break
 
-            # Compute next slot first (drift-resistant pattern)
-            next_deadline += interval_s
-
             # One measurement cycle
             try:
-                global disable_halt
                 disable_halt = True  # protect the cycle from immediate stop
 
                 values = read_once()  # replace with your real reader
@@ -185,6 +181,9 @@ def run_logger(
                               error_text=str(e))
             finally:
                 disable_halt = False  # cycle done -> stopping allowed
+
+            # Compute next slot first (drift-resistant pattern)
+            next_deadline += interval_s
 
             # Sleep until the next slot (may be <= 0 if running behind)
             delay = next_deadline - perf_counter()
@@ -221,18 +220,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="CSV separator for the error log")
     p.add_argument("--decimals", type=int, default=DEFAULT_DECIMALS,
                    help="Number of decimals in formatted outputs")
-    p.add_argument("command", choices=["run", "version"], help="Command to execute")
     return p
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
-    if args.command == "version":
-        print("datalogger-stem 0.1.0")
-        return 0
-
-    # command == run
     return run_logger(
         base_dir=args.base_dir,
         file_prefix=args.prefix,
