@@ -41,16 +41,45 @@ DEFAULT_ERR_CSV_SEP: str = ", "    # human-friendly error log
 # ──────────────────────────────────────────────────────────────────────────────
 # Formatting helpers
 # ──────────────────────────────────────────────────────────────────────────────
-def format_data(data: Iterable[float], decimals: int, sep: str) -> str:
-    """Round values and join with `sep` for CSV-like output."""
+def format_data(
+    data: Iterable[int | float],
+    decimals: int,
+    sep: str,
+) -> str:
+    """
+    Format numeric values for CSV-like output.
+
+    Rules:
+    - int values stay as integers (e.g. 1 -> "1")
+    - float-like values are formatted with fixed decimals (e.g. 3.14 -> "3.140")
+
+    Parameters
+    ----------
+    data : iterable of int | float
+        Values to format.
+    decimals : int
+        Number of decimal places for float values.
+    sep : str
+        Separator string.
+
+    Returns
+    -------
+    str
+        Joined string of formatted values.
+    """
+    fmt = f"{{:.{decimals}f}}"
     out = []
-    for value in data:
-        v = float(value)
-        out.append(f"{round(v, decimals):.{decimals}f}")
+
+    for v in data:
+        if isinstance(v, int):
+            out.append(str(v))               # Keep pure ints unchanged
+        else:
+            out.append(fmt.format(float(v))) # Format floats with fixed decimals
+
     return sep.join(out)
 
 
-def format_pretty(data: Iterable[float], decimals: int) -> str:
+def format_pretty(data: Iterable[float | int], decimals: int) -> str:
     """Human-friendly terminal line (comma + space)."""
     return format_data(data, decimals, ", ")
 
@@ -76,9 +105,23 @@ _sig_installed = False
 
 
 def _sig_handler(signum, frame) -> None:
-    """Arm a clean shutdown; the loop checks this between cycles."""
-    global halt_requested
-    halt_requested = True
+    """
+    SIGINT handler:
+
+    - If we are in the middle of a measurement (disable_halt=True),
+      just request a clean stop after this cycle.
+    - Otherwise, exit immediately without waiting for the next interval.
+    """
+    global halt_requested, disable_halt
+
+    if disable_halt:
+        # Mittauskierroksen sisällä -> lopetetaan seuraavassa safe pointissa
+        halt_requested = True
+        print("\nTermination requested (Ctrl+C). Will stop after current cycle.")
+        return
+
+    print("\nTermination requested (Ctrl+C). Exiting immediately...")
+    raise SystemExit(0)
 
 
 def install_signal_handlers_once() -> None:
@@ -127,7 +170,6 @@ def run_logger(
     print("Synchronizing time.")
     while get_sec_fractions(4) != 0:
         pass
-    next_deadline = perf_counter()
     ts_start = int(time.time())
     
     data_log = DataLog(
@@ -149,11 +191,12 @@ def run_logger(
     )
 
     # Minimal header example; adjust later in your project
-    header = ["ts"]
+    header = ["count", "ts"]
     data_log.write(header)
 
-    measurement_index = 0
-    rows = 0
+    tp0 = perf_counter()       # reference for drift-free scheduling
+    ts_start = int(time.time())
+    count = 0                  # measurement index for scheduling
 
     try:
         while True:
@@ -165,38 +208,40 @@ def run_logger(
             try:
                 disable_halt = True  # protect the cycle from immediate stop
 
+                count += 1
                 values = read_once()  # replace with your real reader
+                values.insert(0, count)
                 csv_line = format_data(values, decimals_out, csv_sep)
                 data_log.write(csv_line)
 
                 # Human-friendly echo to terminal
                 print(format_pretty(values, decimals_out))
-
-                rows += 1
-                measurement_index += 1
             except Exception as e:
                 # Log error but keep the loop running
                 err_log.write(timestamp=int(time.time()),
-                              measurement=measurement_index,
+                              measurement=count,
                               error_text=str(e))
             finally:
                 disable_halt = False  # cycle done -> stopping allowed
 
-            # Compute next slot first (drift-resistant pattern)
-            next_deadline += interval_s
+            # Safe point: ok to stop here if requested during previous cycle
+            if halt_requested:
+                print("Exiting program.")
+                break
 
-            # Sleep until the next slot (may be <= 0 if running behind)
-            delay = next_deadline - perf_counter()
-            if delay > 0:
-                sleep(delay)
+            # BME-style drift-free scheduling:
+            tp_end = perf_counter()
+            wait_time = count * interval_s - (tp_end - tp0)
+            if wait_time > 0:
+                sleep(wait_time)
 
     except Exception as e:
         err_log.write(timestamp=int(time.time()),
-                      measurement=measurement_index,
+                      measurement=count,
                       error_text=f"fatal: {e}")
         return 2
 
-    print(f"Stopped. Total rows written: {rows}")
+    print(f"Stopped. Total rows written: {count}")
     return 0
 
 
