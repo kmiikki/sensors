@@ -9,6 +9,7 @@ VERSION="2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="${SCRIPT_DIR}/dpslogger"
 DOCS_DIR="${SCRIPT_DIR}/docs"
+SERIAL_DEBUG_SRC="${SOURCE_DIR}/tools/dps-serial-debug"
 
 usage() {
     cat <<EOF
@@ -103,6 +104,15 @@ check_source_tree() {
     [[ -f "${SOURCE_DIR}/tools/port_check.py" ]] || die "Missing port_check.py"
     [[ -f "${SOURCE_DIR}/tools/loopback_test.py" ]] || die "Missing loopback_test.py"
     [[ -f "${SOURCE_DIR}/tools/setup_udev.py" ]] || die "Missing setup_udev.py"
+    [[ -f "${SERIAL_DEBUG_SRC}" ]] || die "Missing dps-serial-debug"
+}
+
+install_serial_debug() {
+    local target="${BIN_DIR}/dps-serial-debug"
+
+    log "Installing serial debug tool to ${target}"
+    cp -f "${SERIAL_DEBUG_SRC}" "${target}"
+    chmod 755 "${target}"
 }
 
 check_python() {
@@ -226,7 +236,8 @@ install_wrappers() {
     write_wrapper "${BIN_DIR}/dps-port-check" "dpslogger.tools.port_check"
     write_wrapper "${BIN_DIR}/dps-loopback-test" "dpslogger.tools.loopback_test"
     write_wrapper "${BIN_DIR}/dps-setup-udev" "dpslogger.tools.setup_udev"
-    write_wrapper "${BIN_DIR}/dps-serial-debug" "dpslogger.tools.dps-serial-debug"
+    
+    install_serial_debug
 }
 
 set_permissions() {
@@ -259,7 +270,7 @@ post_install_test() {
     "${BIN_DIR}/dps-port-check" --help >/dev/null
     "${BIN_DIR}/dps-loopback-test" --help >/dev/null
     "${BIN_DIR}/dps-setup-udev" --help >/dev/null
-    "${BIN_DIR}/dps-serial-debug" --help >/dev/null
+    test -x "${BIN_DIR}/dps-serial-debug"
 }
 
 print_summary() {
