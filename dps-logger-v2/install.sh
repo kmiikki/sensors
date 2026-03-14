@@ -91,13 +91,18 @@ check_layout() {
 check_source_tree() {
     [[ -f "${SOURCE_DIR}/__init__.py" ]] || die "Missing ${SOURCE_DIR}/__init__.py"
     [[ -d "${SOURCE_DIR}/cli" ]] || die "Missing ${SOURCE_DIR}/cli"
+    [[ -d "${SOURCE_DIR}/tools" ]] || die "Missing ${SOURCE_DIR}/tools"
 
     [[ -f "${SOURCE_DIR}/cli/dps_bus_logger.py" ]] || die "Missing dps_bus_logger.py"
     [[ -f "${SOURCE_DIR}/cli/dps_term.py" ]] || die "Missing dps_term.py"
     [[ -f "${SOURCE_DIR}/cli/dps_address_scan.py" ]] || die "Missing dps_address_scan.py"
     [[ -f "${SOURCE_DIR}/cli/dps_read.py" ]] || die "Missing dps_read.py"
     [[ -f "${SOURCE_DIR}/cli/dps_set_address.py" ]] || die "Missing dps_set_address.py"
-    [[ -f "${SOURCE_DIR}/cli/dps_plot_csv.py" ]] || die "Missing plot_dps_csv.py"
+    [[ -f "${SOURCE_DIR}/cli/dps_plot_csv.py" ]] || die "Missing dps_plot_csv.py"
+
+    [[ -f "${SOURCE_DIR}/tools/port_check.py" ]] || die "Missing port_check.py"
+    [[ -f "${SOURCE_DIR}/tools/loopback_test.py" ]] || die "Missing loopback_test.py"
+    [[ -f "${SOURCE_DIR}/tools/setup_udev.py" ]] || die "Missing setup_udev.py"
 }
 
 check_python() {
@@ -217,6 +222,11 @@ install_wrappers() {
     write_wrapper "${BIN_DIR}/dps-read" "dpslogger.cli.dps_read"
     write_wrapper "${BIN_DIR}/dps-set-address" "dpslogger.cli.dps_set_address"
     write_wrapper "${BIN_DIR}/dps-plot" "dpslogger.cli.dps_plot_csv"
+
+    write_wrapper "${BIN_DIR}/dps-port-check" "dpslogger.tools.port_check"
+    write_wrapper "${BIN_DIR}/dps-loopback-test" "dpslogger.tools.loopback_test"
+    write_wrapper "${BIN_DIR}/dps-setup-udev" "dpslogger.tools.setup_udev"
+    write_wrapper "${BIN_DIR}/dps-serial-debug" "dpslogger.tools.dps-serial-debug"
 }
 
 set_permissions() {
@@ -231,6 +241,10 @@ set_permissions() {
     chmod 755 "${BIN_DIR}/dps-read"
     chmod 755 "${BIN_DIR}/dps-set-address"
     chmod 755 "${BIN_DIR}/dps-plot"
+    chmod 755 "${BIN_DIR}/dps-port-check"
+    chmod 755 "${BIN_DIR}/dps-loopback-test"
+    chmod 755 "${BIN_DIR}/dps-setup-udev"
+    chmod 755 "${BIN_DIR}/dps-serial-debug"
 }
 
 post_install_test() {
@@ -242,6 +256,10 @@ post_install_test() {
     "${BIN_DIR}/dps-read" --help >/dev/null
     "${BIN_DIR}/dps-set-address" --help >/dev/null
     "${BIN_DIR}/dps-plot" --help >/dev/null
+    "${BIN_DIR}/dps-port-check" --help >/dev/null
+    "${BIN_DIR}/dps-loopback-test" --help >/dev/null
+    "${BIN_DIR}/dps-setup-udev" --help >/dev/null
+    "${BIN_DIR}/dps-serial-debug" --help >/dev/null
 }
 
 print_summary() {
@@ -268,6 +286,10 @@ Commands:
   ${BIN_DIR}/dps-read
   ${BIN_DIR}/dps-set-address
   ${BIN_DIR}/dps-plot
+  ${BIN_DIR}/dps-port-check
+  ${BIN_DIR}/dps-loopback-test
+  ${BIN_DIR}/dps-setup-udev
+  ${BIN_DIR}/dps-serial-debug
 
 Notes:
   - DPS Logger is installed as a shared read-only application.
@@ -306,3 +328,4 @@ main() {
 }
 
 main "$@"
+

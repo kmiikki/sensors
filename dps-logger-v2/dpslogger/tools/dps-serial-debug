@@ -1,0 +1,689 @@
+#!/usr/bin/env bash
+#
+# serial-debug — serial protocol debugging tool
+#
+# Copyright (c) 2026 Kim Miikki
+# Developed with assistance from ChatGPT
+#
+set -euo pipefail
+
+VERSION="1.0"
+AUTHOR="Kim Miikki"
+YEAR="2026"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  serial-debug [options] DEVICE COMMAND
+  serial-debug [options] --interactive DEVICE
+  serial-debug [options] --listen DEVICE
+  serial-debug [options] --sniff DEVICE
+  serial-debug [options] --scan-eol DEVICE COMMAND
+  serial-debug [options] --scan-baud DEVICE COMMAND
+
+Options:
+  -b, --baud BAUD         Baud rate (default: 9600)
+  -e, --eol MODE          EOL mode: cr | lf | crlf | lfcr | none (default: crlf)
+  -t, --timeout SEC       Read timeout in seconds (default: 2)
+  -s, --sleep SEC         Sleep after write before read (default: 0.2)
+  -w, --width BYTES       Bytes per visual row (default: 16)
+  -n, --lines COUNT       Read up to COUNT response lines (default: 1)
+      --trim-cr           Remove trailing carriage return from received lines
+      --hex-only          Show only hex column
+      --ascii-only        Show only visible text column
+      --text              Show extra TEXT rendering
+      --log FILE          Write displayed output also to FILE
+      --append            Append to log file instead of overwriting
+      --ts-ms             Show timestamps with millisecond precision
+      --ts-us             Show timestamps with microsecond precision
+  -i, --interactive       Interactive mode
+  -l, --listen            Listen only, line based
+      --sniff             Raw sniff mode with idle-gap frame splitting
+      --frame-gap SEC     Idle gap that ends a sniff frame (default: 0.20)
+      --show-delay        Show delay from previous sniff frame
+      --sniff-idle SEC    Alias for --frame-gap
+      --sniff-max BYTES   Maximum bytes per sniff frame (default: 4096)
+      --scan-eol          Try common EOL modes with the given COMMAND
+      --scan-baud         Try common baud rates with the given COMMAND
+      --baud-list LIST    Baud list for --scan-baud (comma or space separated)
+  -h, --help              Show this help
+      --version           Show program version
+
+Example:
+  serial-debug /dev/ttyUSB0 S
+USAGE
+}
+
+baud=9600
+eol_mode="crlf"
+read_timeout=2
+post_write_sleep=0.2
+interactive=0
+listen_only=0
+sniff_mode=0
+scan_eol_mode=0
+scan_baud_mode=0
+bytes_per_line=16
+response_lines=1
+trim_cr=0
+hex_only=0
+ascii_only=0
+sniff_idle=0.20
+show_delay=0
+sniff_max_bytes=4096
+baud_list="1200 2400 4800 9600 19200 38400 57600 115200"
+show_text=0
+log_file=""
+log_append=0
+timestamp_mode="sec"
+
+show_version() {
+    echo "serial-debug $VERSION"
+    echo "Copyright (c) $YEAR $AUTHOR"
+}
+
+case "${1:-}" in
+    --help|-h)
+        usage
+        exit 0
+        ;;
+    --version)
+        show_version
+        exit 0
+        ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -b|--baud) baud="$2"; shift 2 ;;
+        -e|--eol) eol_mode="$2"; shift 2 ;;
+        -t|--timeout) read_timeout="$2"; shift 2 ;;
+        -s|--sleep) post_write_sleep="$2"; shift 2 ;;
+        -w|--width) bytes_per_line="$2"; shift 2 ;;
+        -n|--lines) response_lines="$2"; shift 2 ;;
+        --trim-cr) trim_cr=1; shift ;;
+        --hex-only) hex_only=1; shift ;;
+        --ascii-only) ascii_only=1; shift ;;
+        -i|--interactive) interactive=1; shift ;;
+        -l|--listen) listen_only=1; shift ;;
+        --sniff) sniff_mode=1; shift ;;
+        --frame-gap) sniff_idle="$2"; shift 2 ;;
+        --show-delay) show_delay=1; shift ;;
+        --sniff-idle) sniff_idle="$2"; shift 2 ;;
+        --sniff-max) sniff_max_bytes="$2"; shift 2 ;;
+        --scan-eol) scan_eol_mode=1; shift ;;
+        --scan-baud) scan_baud_mode=1; shift ;;
+        --baud-list) baud_list="$2"; shift 2 ;;
+        --text) show_text=1; shift ;;
+        --log) log_file="$2"; shift 2 ;;
+        --append) log_append=1; shift ;;
+        --ts-ms) timestamp_mode="ms"; shift ;;
+        --ts-us) timestamp_mode="us"; shift ;;        
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+        *) break ;;
+    esac
+done
+
+[[ "$hex_only" -eq 1 && "$ascii_only" -eq 1 ]] && { echo "Choose only one of --hex-only and --ascii-only" >&2; exit 1; }
+[[ "$bytes_per_line" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid width: $bytes_per_line" >&2; exit 1; }
+[[ "$response_lines" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid lines count: $response_lines" >&2; exit 1; }
+[[ "$sniff_max_bytes" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid sniff max bytes: $sniff_max_bytes" >&2; exit 1; }
+
+mode_count=$(( interactive + listen_only + sniff_mode + scan_eol_mode + scan_baud_mode ))
+(( mode_count <= 1 )) || { echo "Choose only one of --interactive, --listen, --sniff, --scan-eol, --scan-baud" >&2; exit 1; }
+
+if [[ $# -lt 1 ]]; then
+    usage >&2
+    exit 1
+fi
+
+if [[ -n "$log_file" ]]; then
+    mkdir -p "$(dirname "$log_file")"
+    if [[ "$log_append" -eq 0 ]]; then
+        : > "$log_file"
+    fi
+fi
+
+device="$1"
+shift || true
+
+configure_port() {
+    stty -F "$device" "$baud" cs8 -cstopb -parenb -ixon -ixoff -crtscts \
+        -echo -icanon clocal -hupcl min 0 time 0 \
+        -icrnl -inlcr -igncr -opost -onlcr
+}
+
+open_port() { exec 3<>"$device"; }
+close_port() { exec 3>&-; }
+timestamp_now() {
+    case "$timestamp_mode" in
+        ms) date +"%H:%M:%S.%3N" ;;
+        us) date +"%H:%M:%S.%6N" ;;
+        *)  date +"%H:%M:%S" ;;
+    esac
+}
+epoch_now() {
+    python3 - <<'PY'
+import time
+print(f"{time.time():.6f}")
+PY
+}
+format_delay() {
+    local now="$1" prev="$2"
+    python3 - "$now" "$prev" <<'PY'
+import sys
+now = float(sys.argv[1])
+prev = float(sys.argv[2])
+print(f"+{now - prev:.3f}s")
+PY
+}
+hex_col_width() { printf '%d' $(( bytes_per_line * 3 - 1 )); }
+
+normalize_baud_list() {
+    tr ',' ' ' <<< "$baud_list" | xargs
+}
+
+append_eol_bytes() {
+    case "$eol_mode" in
+        cr)   printf '\r' ;;
+        lf)   printf '\n' ;;
+        crlf) printf '\r\n' ;;
+        lfcr) printf '\n\r' ;;
+        none) ;;
+        *)    ;;
+    esac
+}
+
+eol_len() {
+    case "$eol_mode" in
+        none) printf '0' ;;
+        cr|lf) printf '1' ;;
+        crlf|lfcr) printf '2' ;;
+        *) printf '0' ;;
+    esac
+}
+
+eol_hex() {
+    case "$eol_mode" in
+        cr) printf '0D' ;;
+        lf) printf '0A' ;;
+        crlf) printf '0D 0A' ;;
+        lfcr) printf '0A 0D' ;;
+        none) printf '' ;;
+    esac
+}
+
+hex_from_bytes() {
+    od -An -v -tx1 | tr '\n' ' ' | tr '[:lower:]' '[:upper:]' | sed 's/^ *//; s/  */ /g; s/ *$//'
+}
+
+split_hex_chunks() {
+    local hex="$1" width="$2"
+    awk -v width="$width" '
+    BEGIN { n = 0 }
+    {
+        for (i = 1; i <= NF; i++) bytes[n++] = $i
+    }
+    END {
+        for (i = 0; i < n; i += width) {
+            line = ""
+            for (j = i; j < i + width && j < n; j++) {
+                if (line != "") line = line " "
+                line = line bytes[j]
+            }
+            print line
+        }
+    }' <<< "$hex"
+}
+
+split_visible_chunks() {
+    local width="$1"
+    perl -CS -e '
+        use strict; use warnings; use utf8;
+        binmode STDIN,  ":raw";
+        binmode STDOUT, ":utf8";
+        my $width = shift @ARGV;
+        local $/;
+        my $data = <STDIN>;
+        my @out;
+        for my $c (split //, $data) {
+            if    ($c eq " ")  { push @out, "·"; }
+            elsif ($c eq "\r") { push @out, "␍"; }
+            elsif ($c eq "\n") { push @out, "␊"; }
+            elsif ($c =~ /[[:print:]]/) { push @out, $c; }
+            else { push @out, "."; }
+        }
+        if (!@out) { print "\n"; exit 0; }
+        for (my $i = 0; $i < @out; $i += $width) {
+            my $end = $i + $width - 1;
+            $end = $#out if $end > $#out;
+            print join("", @out[$i .. $end]), "\n";
+        }
+    ' "$width"
+}
+
+pad_field() {
+    local text="$1" width="$2"
+    printf "%-${width}s" "$text"
+}
+
+print_and_log() {
+    local line="$1"
+    printf '%s\n' "$line"
+    if [[ -n "$log_file" ]]; then
+        printf '%s\n' "$line" >> "$log_file"
+    fi
+}
+
+timestamp_width() {
+    case "$timestamp_mode" in
+        ms) printf '12' ;;
+        us) printf '15' ;;
+        *)  printf '8' ;;
+    esac
+}
+
+split_text_chunks() {
+    local width="$1"
+    perl -CS -e '
+        use strict; use warnings; use utf8;
+        binmode STDIN,  ":raw";
+        binmode STDOUT, ":utf8";
+
+        my $width = shift @ARGV;
+        local $/;
+        my $data = <STDIN>;
+
+        my @tok;
+        for my $c (split //, $data) {
+            if    ($c eq "\r") { push @tok, "<CR>"; }
+            elsif ($c eq "\n") { push @tok, "<LF>"; }
+            elsif ($c =~ /[[:print:]]/) { push @tok, $c; }
+        }
+
+        if (!@tok) {
+            print "\n";
+            exit 0;
+        }
+
+        my $line = "";
+        for my $t (@tok) {
+            if (length($line) && length($line) + length($t) > $width) {
+                print $line, "\n";
+                $line = $t;
+            } else {
+                $line .= $t;
+            }
+        }
+        print $line, "\n" if length($line);
+    ' "$width"
+}
+
+print_text_row() {
+    local txt="$1"
+    local tsw prefix hexw line
+
+    tsw="$(timestamp_width)"
+    prefix=$(( tsw + 9 ))
+    hexw="$(hex_col_width)"
+
+    printf -v line "%*s| %s | TEXT: \"%s\"" \
+        "$prefix" "" "$(pad_field "" "$hexw")" "$txt"
+
+    print_and_log "$line"
+}
+
+print_row() {
+    local ts="$1" dir="$2" len="$3" hex_part="$4" ascii_part="$5"
+    local hexw line tsw
+
+    hexw="$(hex_col_width)"
+    tsw="$(timestamp_width)"
+
+    if [[ "$hex_only" -eq 1 ]]; then
+        printf -v line "%-*s %-3s %3s | %s" \
+            "$tsw" "$ts" "$dir" "$len" "$hex_part"
+    elif [[ "$ascii_only" -eq 1 ]]; then
+        printf -v line "%-*s %-3s %3s | %s" \
+            "$tsw" "$ts" "$dir" "$len" "$ascii_part"
+    else
+        printf -v line "%-*s %-3s %3s | %s | %s" \
+            "$tsw" "$ts" "$dir" "$len" "$(pad_field "$hex_part" "$hexw")" "$ascii_part"
+    fi
+
+    print_and_log "$line"
+}
+
+print_frame_multiline() {
+    local dir="$1" data="$2" delay="${3:-}" ts len hex
+    local -a hex_lines ascii_lines text_lines
+
+    ts="$(timestamp_now)"
+    len=$(printf '%s' "$data" | wc -c | tr -d ' ')
+    hex="$(printf '%s' "$data" | hex_from_bytes)"
+
+    mapfile -t hex_lines < <(split_hex_chunks "$hex" "$bytes_per_line")
+    mapfile -t ascii_lines < <(printf '%s' "$data" | split_visible_chunks "$bytes_per_line")
+
+    local count="${#hex_lines[@]}"
+    (( ${#ascii_lines[@]} > count )) && count="${#ascii_lines[@]}"
+    (( count == 0 )) && count=1
+
+    local dir_display="$dir"
+    if [[ -n "$delay" ]]; then
+        dir_display="$dir $delay"
+    fi
+
+    local i
+    for ((i = 0; i < count; i++)); do
+        if (( i == 0 )); then
+            print_row "$ts" "$dir_display" "$len" "${hex_lines[i]:-}" "${ascii_lines[i]:-}"
+        else
+            print_row "" "" "" "${hex_lines[i]:-}" "${ascii_lines[i]:-}"
+        fi
+    done
+
+    if [[ "$show_text" -eq 1 ]]; then
+        mapfile -t text_lines < <(printf '%s' "$data" | split_text_chunks "$(( bytes_per_line * 3 ))")
+        for i in "${!text_lines[@]}"; do
+            [[ -n "${text_lines[i]}" ]] && print_text_row "${text_lines[i]}"
+        done
+    fi
+}
+
+command_hex() {
+    local cmd="$1" cmd_hex e_hex
+    cmd_hex="$(printf '%s' "$cmd" | hex_from_bytes)"
+    e_hex="$(eol_hex)"
+    if [[ -n "$cmd_hex" && -n "$e_hex" ]]; then
+        printf '%s %s' "$cmd_hex" "$e_hex"
+    elif [[ -n "$cmd_hex" ]]; then
+        printf '%s' "$cmd_hex"
+    else
+        printf '%s' "$e_hex"
+    fi
+}
+
+command_ascii() {
+    local cmd="$1"
+    printf '%s%s' "$cmd" "$(append_eol_bytes)" | split_visible_chunks "$bytes_per_line"
+}
+
+print_out_command() {
+    local cmd="$1" ts len hex
+    local -a hex_lines ascii_lines text_lines
+    local payload
+
+    ts="$(timestamp_now)"
+    len=$(( ${#cmd} + $(eol_len) ))
+
+    payload="$(
+        {
+            printf '%s' "$cmd"
+            append_eol_bytes
+        } | od -An -tx1 -v | tr '[:lower:]' '[:upper:]' | tr '\n' ' ' | sed 's/^ *//; s/ *$//; s/  */ /g'
+    )"
+
+    mapfile -t hex_lines < <(split_hex_chunks "$payload" "$bytes_per_line")
+    mapfile -t ascii_lines < <(
+        {
+            printf '%s' "$cmd"
+            append_eol_bytes
+        } | split_visible_chunks "$bytes_per_line"
+    )
+
+    local count="${#hex_lines[@]}"
+    (( ${#ascii_lines[@]} > count )) && count="${#ascii_lines[@]}"
+    (( count == 0 )) && count=1
+
+    local i
+    for ((i = 0; i < count; i++)); do
+        if (( i == 0 )); then
+            print_row "$ts" "OUT" "$len" "${hex_lines[i]:-}" "${ascii_lines[i]:-}"
+        else
+            print_row "" "" "" "${hex_lines[i]:-}" "${ascii_lines[i]:-}"
+        fi
+    done
+
+    if [[ "$show_text" -eq 1 ]]; then
+        mapfile -t text_lines < <(
+            {
+                printf '%s' "$cmd"
+                append_eol_bytes
+            } | split_text_chunks "$(( bytes_per_line * 3 ))"
+        )
+        for i in "${!text_lines[@]}"; do
+            [[ -n "${text_lines[i]}" ]] && print_text_row "${text_lines[i]}"
+        done
+    fi
+}
+
+write_command() {
+    local cmd="$1"
+    printf '%s' "$cmd" >&3
+    append_eol_bytes >&3
+}
+
+drain_input() {
+    perl -e '
+        use strict; use warnings;
+        binmode STDIN, ":raw";
+        my $fd = fileno(STDIN);
+        while (1) {
+            my $rin = "";
+            vec($rin, $fd, 1) = 1;
+            my $n = select(my $rout = $rin, undef, undef, 0.02);
+            last unless $n;
+            my $buf = "";
+            my $r = sysread(STDIN, $buf, 4096);
+            last unless defined($r) && $r > 0;
+        }
+    ' <&3
+}
+
+read_one_response() {
+    local line=""
+    IFS= read -r -t "$read_timeout" -d $'\n' line <&3 || true
+    if [[ "$trim_cr" -eq 1 ]]; then
+        line="${line%$'\r'}"
+    fi
+    printf '%s' "$line"
+}
+
+read_responses() {
+    local count="$1" got=0 line
+    while (( got < count )); do
+        line="$(read_one_response)"
+        if [[ -n "$line" ]]; then
+            printf '%s\x1e' "$line"
+            got=$((got + 1))
+        else
+            break
+        fi
+    done
+}
+
+read_sniff_frame() {
+    perl -e '
+        use strict; use warnings;
+        binmode STDIN, ":raw";
+        binmode STDOUT, ":raw";
+        my ($idle, $max) = @ARGV;
+        my $fd = fileno(STDIN);
+        my $buf = "";
+        while (1) {
+            my $rin = "";
+            vec($rin, $fd, 1) = 1;
+            my $timeout = length($buf) ? $idle : undef;
+            my $n = select(my $rout = $rin, undef, undef, $timeout);
+            if ($n) {
+                my $chunk = "";
+                my $r = sysread(STDIN, $chunk, 1);
+                exit 0 unless defined($r) && $r > 0;
+                $buf .= $chunk;
+                if (length($buf) >= $max) {
+                    print $buf;
+                    exit 0;
+                }
+            }
+            elsif (length($buf)) {
+                print $buf;
+                exit 0;
+            }
+        }
+    ' "$sniff_idle" "$sniff_max_bytes" <&3
+}
+
+print_timeout() {
+    if [[ "$hex_only" -eq 1 || "$ascii_only" -eq 1 ]]; then
+        printf "%-8s %-12s %3s | %s\n" "$(timestamp_now)" "IN" "" "<timeout/no data>"
+    else
+        print_row "$(timestamp_now)" "IN" "" "" "<timeout/no data>"
+    fi
+}
+
+run_command_once() {
+    local cmd="$1" responses
+    drain_input
+    print_out_command "$cmd"
+    write_command "$cmd"
+    sleep "$post_write_sleep"
+
+    responses="$(read_responses "$response_lines")"
+    if [[ -n "$responses" ]]; then
+        while IFS= read -r -d $'\x1e' line; do
+            print_frame_multiline "IN" "$line"
+        done <<< "$responses"
+    else
+        print_timeout
+    fi
+}
+
+single_shot() {
+    [[ $# -lt 1 ]] && { echo "Missing COMMAND" >&2; usage >&2; exit 1; }
+    local cmd="$1"
+
+    configure_port
+    open_port
+    run_command_once "$cmd"
+    close_port
+}
+
+interactive_mode() {
+    configure_port
+    open_port
+    echo "Interactive mode on $device"
+    echo "Baud: $baud, EOL: $eol_mode, timeout: ${read_timeout}s, lines: $response_lines"
+    echo "Exit with Ctrl+C or by typing: exit"
+    echo
+    trap 'echo; close_port; exit 0' INT TERM
+
+    while true; do
+        printf 'serial> '
+        local cmd=""
+        IFS= read -r cmd || break
+        [[ -z "$cmd" ]] && continue
+        if [[ -n "$log_file" ]]; then
+            printf 'serial> %s\n' "$cmd" >> "$log_file"
+        fi
+        [[ "$cmd" == "exit" || "$cmd" == "quit" ]] && break
+        run_command_once "$cmd"
+        printf '\n'
+    done
+    close_port
+}
+
+listen_mode() {
+    configure_port
+    open_port
+    echo "Listen mode on $device"
+    echo "Baud: $baud"
+    echo "Exit with Ctrl+C"
+    echo
+    trap 'echo; close_port; exit 0' INT TERM
+    while true; do
+        local line
+        line="$(read_one_response)"
+        [[ -n "$line" ]] && print_frame_multiline "IN" "$line"
+    done
+}
+
+sniff_mode_run() {
+    configure_port
+    open_port
+    echo "Sniff mode on $device"
+    echo "Baud: $baud, frame gap: ${sniff_idle}s, max frame: $sniff_max_bytes bytes"
+    (( show_delay == 1 )) && echo "Frame delay: shown"
+    echo "Exit with Ctrl+C"
+    echo
+    trap 'echo; close_port; exit 0' INT TERM
+    local prev_epoch=""
+    while true; do
+        local frame now_epoch delay_label=""
+        frame="$(read_sniff_frame)"
+        if [[ -n "$frame" ]]; then
+            now_epoch="$(epoch_now)"
+            if (( show_delay == 1 )) && [[ -n "$prev_epoch" ]]; then
+                delay_label="$(format_delay "$now_epoch" "$prev_epoch")"
+            fi
+            print_frame_multiline "IN" "$frame" "$delay_label"
+            prev_epoch="$now_epoch"
+        fi
+    done
+}
+
+scan_eol_run() {
+    [[ $# -lt 1 ]] && { echo "--scan-eol requires COMMAND" >&2; usage >&2; exit 1; }
+    local cmd="$1"
+    local original_eol="$eol_mode"
+    local modes=(none cr lf crlf lfcr)
+    local mode
+
+    for mode in "${modes[@]}"; do
+        eol_mode="$mode"
+        echo "=== EOL: $mode ==="
+        configure_port
+        open_port
+        run_command_once "$cmd"
+        close_port
+        echo
+    done
+    eol_mode="$original_eol"
+}
+
+scan_baud_run() {
+    [[ $# -lt 1 ]] && { echo "--scan-baud requires COMMAND" >&2; usage >&2; exit 1; }
+    local cmd="$1"
+    local original_baud="$baud"
+    local candidate
+    local -a candidates
+
+    read -r -a candidates <<< "$(normalize_baud_list)"
+    for candidate in "${candidates[@]}"; do
+        [[ "$candidate" =~ ^[0-9]+$ ]] || { echo "Skipping invalid baud entry: $candidate" >&2; continue; }
+        baud="$candidate"
+        echo "=== Baud: $baud ==="
+        configure_port
+        open_port
+        run_command_once "$cmd"
+        close_port
+        echo
+    done
+    baud="$original_baud"
+}
+
+if [[ "$sniff_mode" -eq 1 ]]; then
+    sniff_mode_run
+elif [[ "$scan_eol_mode" -eq 1 ]]; then
+    scan_eol_run "$@"
+elif [[ "$scan_baud_mode" -eq 1 ]]; then
+    scan_baud_run "$@"
+elif [[ "$listen_only" -eq 1 ]]; then
+    listen_mode
+elif [[ "$interactive" -eq 1 ]]; then
+    interactive_mode
+else
+    single_shot "$@"
+fi

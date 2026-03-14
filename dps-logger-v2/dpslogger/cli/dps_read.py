@@ -58,20 +58,30 @@ def main(argv: list[str] | None = None) -> int:
 
     dps = make_dps(args)
 
-    if args.mode == "R":
-        value = dps.read_pressure_r()
-        output = f"{value:.5f}"
-    else:
-        value, unit = dps.read_pressure_with_unit()
-        output = f"{value:.5f},{unit}"
+    try:
+        if args.mode == "R":
+            value = dps.read_pressure_r()
+            output = f"{value:.5f}"
+        else:
+            value, unit = dps.read_pressure_with_unit()
+            output = f"{value:.5f},{unit}"
 
-    if args.timestamp:
-        print(f"{iso_timestamp(args.utc)},{output}")
-    else:
-        print(output)
+        if args.timestamp:
+            print(f"{iso_timestamp(args.utc)},{output}")
+        else:
+            print(output)
 
-    return 0
+        return 0
+
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        print(
+            f"No response received from sensor at address {args.addr} "
+            f"on port {args.port}."
+        )
+        return 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    
