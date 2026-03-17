@@ -14,11 +14,16 @@ from matplotlib.ticker import ScalarFormatter
 from scipy import stats
 
 DEFAULT_DPI = 300
+HIGH_RES_DPI = 600
 DEFAULT_SLOPE_TH = 1e-3
 DEFAULT_BINS_MAX = 200
 
 
-def resolve_targets(directory: Path, csv_name: str | None) -> list[Path]:
+def resolve_targets(
+    directory: Path,
+    csv_name: str | None,
+    last_only: bool = False,
+) -> list[Path]:
     if csv_name:
         target = Path(csv_name)
         if not target.is_absolute():
@@ -30,28 +35,18 @@ def resolve_targets(directory: Path, csv_name: str | None) -> list[Path]:
     files = sorted(directory.glob("*.csv"))
     if not files:
         raise FileNotFoundError(f"No CSV files found in {directory}")
+
+    if last_only:
+        return [files[-1]]
     return files
 
 
-def auto_bins(values: np.ndarray) -> int:
+def auto_bins(values: np.ndarray, coarse: bool = False) -> int:
     """
     Select histogram bin count using the Freedman–Diaconis rule.
 
-    This is the fallback method for general continuous-valued data.
-
-    Formula:
-        bin_width = 2 * IQR / n^(1/3)
-        bins = ceil((max - min) / bin_width)
-
-    Why this method:
-    - More robust than sqrt(n) because it uses both sample size and IQR
-    - Less sensitive to outliers than variance-based rules
-
-    Fallbacks:
-    - If n <= 1, return 1
-    - If IQR <= 0 or range <= 0, fall back to sqrt(n)-style estimate
-    - Clamp to [1, DEFAULT_BINS_MAX], with a practical minimum of 10
-      when there is data variation
+    In coarse mode the returned count is reduced to produce a visually simpler
+    histogram while still scaling with the data size.
     """
     values = np.asarray(values, dtype=float)
     n = len(values)
@@ -68,17 +63,23 @@ def auto_bins(values: np.ndarray) -> int:
     iqr = float(q3 - q1)
 
     if iqr <= 0:
-        return max(10, min(DEFAULT_BINS_MAX, int(round(math.sqrt(n)))))
+        bins = int(round(math.sqrt(n)))
+    else:
+        bin_width = 2.0 * iqr / (n ** (1.0 / 3.0))
+        if bin_width <= 0:
+            bins = int(round(math.sqrt(n)))
+        else:
+            bins = int(math.ceil(data_range / bin_width))
 
-    bin_width = 2.0 * iqr / (n ** (1.0 / 3.0))
-    if bin_width <= 0:
-        return max(10, min(DEFAULT_BINS_MAX, int(round(math.sqrt(n)))))
+    bins = max(10, min(DEFAULT_BINS_MAX, bins))
 
-    bins = int(math.ceil(data_range / bin_width))
-    return max(10, min(DEFAULT_BINS_MAX, bins))
+    if coarse:
+        bins = max(10, bins // 3)
+
+    return max(1, min(DEFAULT_BINS_MAX, bins))
 
 
-def quantized_bin_edges(values: np.ndarray) -> np.ndarray | None:
+def quantized_bin_edges(values: np.ndarray, grouping: int = 1) -> np.ndarray | None:
     """
     Build histogram bin edges for quantized measurement data.
 
@@ -87,12 +88,7 @@ def quantized_bin_edges(values: np.ndarray) -> np.ndarray | None:
       between observed unique values.
     - Build one bin for every possible quantized level between observed
       minimum and maximum.
-    - This preserves real empty bins if some quantized levels are missing.
-
-    Example:
-        If observed values are on a 1e-5 grid from 1.01415 to 1.01422,
-        bins are created for every level in that full range.
-        Missing levels remain visible as true empty bins.
+    - Optionally merge adjacent quantized levels using ``grouping``.
 
     Returns:
     - bin edges array if a stable quantized grid can be inferred
@@ -114,7 +110,6 @@ def quantized_bin_edges(values: np.ndarray) -> np.ndarray | None:
     data_min = float(unique_vals[0])
     data_max = float(unique_vals[-1])
 
-    # Verify that all observed values lie on the inferred quantized grid.
     indices = np.round((unique_vals - data_min) / step)
     reconstructed = data_min + indices * step
     if not np.allclose(unique_vals, reconstructed, rtol=0.0, atol=1e-12):
@@ -124,13 +119,58 @@ def quantized_bin_edges(values: np.ndarray) -> np.ndarray | None:
     if n_levels < 2:
         return None
 
-    levels = data_min + step * np.arange(n_levels, dtype=float)
+    grouping = max(1, int(grouping))
+    grouped_step = step * grouping
+    levels = data_min + grouped_step * np.arange(int(math.ceil(n_levels / grouping)), dtype=float)
 
-    edges = np.empty(n_levels + 1, dtype=float)
-    edges[1:-1] = (levels[:-1] + levels[1:]) / 2.0
-    edges[0] = levels[0] - step / 2.0
-    edges[-1] = levels[-1] + step / 2.0
+    edges = np.empty(len(levels) + 1, dtype=float)
+    edges[:-1] = levels - grouped_step / 2.0
+    edges[-1] = levels[-1] + grouped_step / 2.0
     return edges
+
+
+def choose_histogram_bins(values: np.ndarray, bins_override: int | None, coarse_hist: bool) -> int:
+    if bins_override is not None:
+        bins = bins_override
+        if coarse_hist:
+            bins = max(10, bins // 3)
+        return max(1, min(DEFAULT_BINS_MAX, bins))
+
+    return auto_bins(values, coarse=coarse_hist)
+
+
+def coarse_grouping_for_quantized(values: np.ndarray, target_bins: int) -> int:
+    edges = quantized_bin_edges(values)
+    if edges is None:
+        return 1
+
+    n_bins = len(edges) - 1
+    if n_bins <= 0:
+        return 1
+
+    target_bins = max(1, target_bins)
+    return max(1, int(math.ceil(n_bins / target_bins)))
+
+
+def choose_histogram_spec(
+    values: np.ndarray,
+    bins_override: int | None,
+    coarse_hist: bool,
+) -> int | np.ndarray:
+    target_bins = choose_histogram_bins(values, bins_override, coarse_hist)
+
+    if coarse_hist:
+        grouping = coarse_grouping_for_quantized(values, target_bins)
+        edges = quantized_bin_edges(values, grouping=grouping)
+        if edges is not None:
+            return edges
+        return target_bins
+
+    edges = quantized_bin_edges(values)
+    if edges is not None:
+        return edges
+
+    return target_bins
 
 
 def load_csv(csv_path: Path) -> pd.DataFrame:
@@ -177,17 +217,6 @@ def configure_plain_axis(ax: plt.Axes, axis: str = "y") -> None:
 
 
 def regression(x: np.ndarray, y: np.ndarray) -> dict[str, float]:
-    """
-    Linear regression with centered x for better numerical robustness.
-
-    Internally:
-        x_centered = x - mean(x)
-
-    The returned model is converted back to the original form:
-        y = slope * time_s + intercept
-
-    so the visible regression equation remains in the same form as before.
-    """
     x_mean = float(np.mean(x))
     x_centered = x - x_mean
 
@@ -269,6 +298,43 @@ def convert_time_axis(values: np.ndarray, factor: float) -> np.ndarray:
     return values / factor
 
 
+def choose_series_style(n_points: int) -> dict[str, float | str | None]:
+    if n_points <= 300:
+        return {"linewidth": 1.0, "markersize": 3.0, "marker": "o", "alpha": 1.0}
+    if n_points <= 1000:
+        return {"linewidth": 0.8, "markersize": 2.0, "marker": "o", "alpha": 0.9}
+    if n_points <= 3000:
+        return {"linewidth": 0.5, "markersize": 1.2, "marker": "o", "alpha": 0.85}
+    if n_points <= 10000:
+        return {"linewidth": 0.35, "markersize": 0.8, "marker": "o", "alpha": 0.8}
+    return {"linewidth": 0.25, "markersize": 0.0, "marker": None, "alpha": 0.9}
+
+
+def choose_plot_theme(bw: bool) -> dict[str, str]:
+    if bw:
+        return {
+            "series": "black",
+            "regression": "black",
+            "hist_face": "0.65",
+            "hist_edge": "black",
+            "textbox_face": "white",
+        }
+
+    return {
+        "series": "C0",
+        "regression": "C1",
+        "hist_face": "C0",
+        "hist_edge": "black",
+        "textbox_face": "white",
+    }
+
+
+def regression_linewidth(bw: bool, data_linewidth: float) -> float:
+    if bw:
+        return max(1.6, data_linewidth * 3.0)
+    return max(1.2, data_linewidth * 1.5)
+
+
 def plot_pressure(
     df: pd.DataFrame,
     out: Path,
@@ -276,20 +342,25 @@ def plot_pressure(
     dpi: int,
     time_unit: str,
     time_factor: float,
+    bw: bool,
 ) -> None:
     fig, ax = plt.subplots()
 
     x = df["t_rel"].to_numpy(dtype=float)
     x_plot = convert_time_axis(x, time_factor)
     y = df["pressure"].to_numpy(dtype=float)
+    style = choose_series_style(len(df))
+    theme = choose_plot_theme(bw)
 
     ax.plot(
         x_plot,
         y,
-        marker="o",
+        color=theme["series"],
+        marker=style["marker"],
         linestyle="-",
-        linewidth=1,
-        markersize=3,
+        linewidth=style["linewidth"],
+        markersize=style["markersize"],
+        alpha=style["alpha"],
     )
     ax.set_xlabel(f"Time ({time_unit})")
     ax.set_ylabel(get_pressure_label(df))
@@ -304,32 +375,27 @@ def plot_pressure(
     plt.close(fig)
 
 
-def plot_hist(df: pd.DataFrame, out: Path, bins: int, grid: bool, dpi: int) -> None:
+def plot_hist(
+    df: pd.DataFrame,
+    out: Path,
+    hist_spec: int | np.ndarray,
+    grid: bool,
+    dpi: int,
+    bw: bool,
+) -> None:
     fig, ax = plt.subplots()
 
     y = df["pressure"].to_numpy(dtype=float)
+    theme = choose_plot_theme(bw)
 
-    # Prefer quantized-level bins when the data looks like quantized measurement
-    # data on a consistent step. This preserves true empty bins if some levels
-    # are missing. Otherwise fall back to Freedman–Diaconis bin count.
-    edges = quantized_bin_edges(y)
-
-    if edges is not None:
-        ax.hist(
-            y,
-            bins=edges,
-            rwidth=1.0,
-            edgecolor="black",
-            linewidth=0.5,
-        )
-    else:
-        ax.hist(
-            y,
-            bins=bins,
-            rwidth=1.0,
-            edgecolor="black",
-            linewidth=0.5,
-        )
+    ax.hist(
+        y,
+        bins=hist_spec,
+        rwidth=1.0,
+        color=theme["hist_face"],
+        edgecolor=theme["hist_edge"],
+        linewidth=0.5,
+    )
 
     ax.set_xlabel(get_pressure_label(df))
     ax.set_ylabel("Count")
@@ -351,29 +417,39 @@ def plot_regression(
     dpi: int,
     time_unit: str,
     time_factor: float,
+    bw: bool,
 ) -> None:
     fig, ax = plt.subplots()
 
     x = df["t_rel"].to_numpy(dtype=float)
     x_plot = convert_time_axis(x, time_factor)
     y = df["pressure"].to_numpy(dtype=float)
+    style = choose_series_style(len(df))
+    theme = choose_plot_theme(bw)
 
     ax.plot(
         x_plot,
         y,
-        marker="o",
+        color=theme["series"],
+        marker=style["marker"],
         linestyle="-",
-        linewidth=1,
-        markersize=3,
+        linewidth=style["linewidth"],
+        markersize=style["markersize"],
+        alpha=style["alpha"],
         label="Measured pressure",
     )
 
-    # Regression is computed in seconds, but drawn in the selected display
-    # time scale so that the fitted line matches the plotted x-axis.
     xr = np.array([x.min(), x.max()], dtype=float)
     xr_plot = convert_time_axis(xr, time_factor)
     yr = reg["slope"] * xr + reg["intercept"]
-    ax.plot(xr_plot, yr, linewidth=1.5, label="Linear regression")
+    ax.plot(
+        xr_plot,
+        yr,
+        color=theme["regression"],
+        linestyle="--" if bw else "-",
+        linewidth=regression_linewidth(bw, float(style["linewidth"])),
+        label="Linear regression",
+    )
 
     ax.set_xlabel(f"Time ({time_unit})")
     ax.set_ylabel(get_pressure_label(df))
@@ -397,7 +473,7 @@ def plot_regression(
         transform=ax.transAxes,
         va="top",
         ha="left",
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
+        bbox={"boxstyle": "round", "facecolor": theme["textbox_face"], "alpha": 0.85},
     )
     ax.legend()
 
@@ -506,6 +582,8 @@ def analyse_file(
     grid: bool,
     dpi: int,
     time_mode: str,
+    bw: bool,
+    coarse_hist: bool,
 ) -> None:
     df = load_csv(csv_path)
 
@@ -514,8 +592,7 @@ def analyse_file(
         return
 
     y = df["pressure"].to_numpy(dtype=float)
-    bins = bins_override if bins_override is not None else auto_bins(y)
-    bins = max(1, min(DEFAULT_BINS_MAX, bins))
+    hist_spec = choose_histogram_spec(y, bins_override, coarse_hist)
 
     x = df["t_rel"].to_numpy(dtype=float)
     reg = regression(x, y) if len(df) >= 2 else None
@@ -530,12 +607,12 @@ def analyse_file(
     stats_txt = Path(f"{stem}_stats.txt")
     regression_png = Path(f"{stem}_regression.png")
 
-    plot_pressure(df, pressure_png, grid, dpi, time_unit, time_factor)
-    plot_hist(df, hist_png, bins, grid, dpi)
+    plot_pressure(df, pressure_png, grid, dpi, time_unit, time_factor, bw)
+    plot_hist(df, hist_png, hist_spec, grid, dpi, bw)
     write_stats(csv_path, df, reg, slope_th, stats_txt)
 
     if reg is not None and abs(reg["slope"]) <= slope_th:
-        plot_regression(df, reg, regression_png, grid, dpi, time_unit, time_factor)
+        plot_regression(df, reg, regression_png, grid, dpi, time_unit, time_factor, bw)
 
     print(f"Analysed: {csv_path.name}")
     print(f"  wrote: {pressure_png.name}")
@@ -567,6 +644,28 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Time unit for plots: auto, s, min, h, or d (default: auto)",
     )
+    parser.add_argument(
+        "-l",
+        "--last",
+        action="store_true",
+        help="Analyse only the latest CSV file in the target directory",
+    )
+    parser.add_argument(
+        "-b",
+        "--bw",
+        action="store_true",
+        help="Use black-and-white / grayscale style for all plots",
+    )
+    parser.add_argument(
+        "--high-res",
+        action="store_true",
+        help="Save figures at 600 dpi for publication-quality output",
+    )
+    parser.add_argument(
+        "--coarse-hist",
+        action="store_true",
+        help="Use a coarser histogram binning for a smoother distribution view",
+    )
 
     return parser.parse_args()
 
@@ -574,17 +673,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     grid = not args.no_grid
+    dpi = HIGH_RES_DPI if args.high_res else args.dpi
 
     try:
-        targets = resolve_targets(args.dir, args.csv)
+        targets = resolve_targets(args.dir, args.csv, last_only=args.last)
         for csv_path in targets:
             analyse_file(
                 csv_path=csv_path,
                 bins_override=args.bins,
                 slope_th=args.slope_th,
                 grid=grid,
-                dpi=args.dpi,
+                dpi=dpi,
                 time_mode=args.time,
+                bw=args.bw,
+                coarse_hist=args.coarse_hist,
             )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
