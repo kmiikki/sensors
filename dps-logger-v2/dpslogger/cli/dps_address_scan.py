@@ -62,6 +62,12 @@ def _iter_addresses(args: argparse.Namespace) -> list[int]:
     return addresses
 
 
+def _print_scan_header(*, port: str, profile: str) -> None:
+    print(f"PORT: {port}")
+    print(f"PROFILE: {profile}")
+    print()
+
+
 def _print_hex_debug(addr: int, result: TransactionResult) -> None:
     tag = f"[addr {addr:02d}]"
     print(f"{tag} OUT {_hexdump(result.command_bytes)}")
@@ -192,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress header lines in table output",
+        help="Suppress initial header/progress output",
     )
     return parser
 
@@ -218,10 +224,16 @@ def main(argv: list[str] | None = None) -> int:
     transport = SerialTransport(transport_cfg)
     dps = DPS8000(transport, dps_cfg)
 
+    if not args.json and not args.quiet:
+        _print_scan_header(port=transport_cfg.port, profile=args.profile)
+
     results: list[ScanResult] = []
     try:
         with dps.opened():
-            for addr in addresses:
+            total = len(addresses)
+            for idx, addr in enumerate(addresses, start=1):
+                if not args.json and not args.quiet and not args.hex:
+                    print(f"Scanning {idx}/{total}", flush=True)
                 results.append(_scan_address(dps, addr, args.cmd, args.hex))
     except (SerialTransportError, DPSProtocolError) as exc:
         print(f"ERROR: {exc}")
@@ -235,20 +247,12 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
-        if not args.quiet:
-            _print_table(
-                results,
-                port=transport_cfg.port,
-                profile=args.profile,
-                show_failures=args.show_failures,
-            )
-        else:
-            _print_table(
-                results,
-                port=transport_cfg.port,
-                profile=args.profile,
-                show_failures=args.show_failures,
-            )
+        _print_table(
+            results,
+            port=transport_cfg.port,
+            profile=args.profile,
+            show_failures=args.show_failures,
+        )
 
     return 0 if any(r.found for r in results) else 1
 
