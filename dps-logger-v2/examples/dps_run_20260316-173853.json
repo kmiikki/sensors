@@ -1,0 +1,37 @@
+{
+  "program": "dpslogger",
+  "version": "2.0",
+  "started_at": "2026-03-16T17:38:53.513698+02:00",
+  "session_id": "20260316-173853",
+  "transport": {
+    "port": "/dev/ttyLOG",
+    "baudrate": 9600,
+    "timeout": 1.0
+  },
+  "sensors": {
+    "addresses": [
+      1
+    ],
+    "profile": "real"
+  },
+  "logging": {
+    "interval_s": 1.0,
+    "duration_s": null,
+    "base_dir": ".",
+    "prefix": "dps",
+    "flush_every": 1,
+    "session_subdir": false
+  },
+  "csv_schema": [
+    "ts_iso",
+    "t_epoch",
+    "t_rel",
+    "cycle",
+    "addr",
+    "pressure",
+    "unit",
+    "latency_s",
+    "source",
+    "status"
+  ]
+}

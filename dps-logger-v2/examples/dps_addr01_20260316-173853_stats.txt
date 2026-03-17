@@ -1,0 +1,37 @@
+[data]
+
+file = dps_addr01_20260316-173853.csv
+sensor_address = 1
+samples = 61640
+interval = 1.000000
+duration = 61639.000074
+pressure_unit = bar
+time_unit = s
+
+
+[statistics]
+
+mean = 1.015818
+median = 1.015440
+std = 0.001062
+min = 1.014390
+max = 1.018700
+
+
+[linear_regression]
+
+Pressure(time_s) = 5.367e-08 * time_s + 1.014164
+slope = 5.367e-08
+intercept = 1.014164
+r2 = 0.8087
+
+
+[stable_pressure_ci95]
+
+method = normal
+confidence = 0.95
+n = 61640
+mean = 1.015818
+lower = 1.015810
+upper = 1.015827
+half_width = 0.000008
