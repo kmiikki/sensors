@@ -1,0 +1,37 @@
+[data]
+
+file = dps_addr02_20260511-163435.csv
+sensor_address = 02
+samples = 11679
+interval = 5.000000
+duration = 58390.000070
+pressure_unit = kPa
+time_unit = s
+
+
+[statistics]
+
+mean = 100.321406
+median = 100.334000
+std = 0.103695
+min = 100.009000
+max = 100.571000
+
+
+[linear_regression]
+
+Pressure(time_s) = -6.040e-06 * time_s + 100.497756
+slope = -6.040e-06
+intercept = 100.497756
+r2 = 0.9643
+
+
+[stable_pressure_ci95]
+
+method = normal
+confidence = 0.95
+n = 11679
+mean = 100.321406
+lower = 100.319526
+upper = 100.323287
+half_width = 0.001881

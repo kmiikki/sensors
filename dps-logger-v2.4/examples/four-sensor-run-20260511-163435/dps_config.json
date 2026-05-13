@@ -1,0 +1,273 @@
+{
+  "program": "dpslogger",
+  "config_version": "2.4",
+  "created_or_updated_at": "2026-05-11T16:31:18.312091+03:00",
+  "created_or_updated_from_profile": "dps_profile_20260511-162948.json",
+  "profile_session_id": "20260511-162948",
+  "profiled_at": "2026-05-11T16:29:48.029551+03:00",
+  "config_policy": {
+    "resolution": "first_match_wins_no_merge_no_inheritance",
+    "unit_map_truth_source": "dps_config.json",
+    "profile_json_role": "audit_trail_and_commissioning_measurement"
+  },
+  "transport": {
+    "port": "/dev/ttyLOG",
+    "baudrate": 9600,
+    "timeout_s": 1.0,
+    "eol": "cr",
+    "command_prefix": " "
+  },
+  "readout": {
+    "read_mode": "burst",
+    "read_command": "G",
+    "command_gap_s": 0.06,
+    "collect_timeout_s": 5.0,
+    "interval_s": 5.0,
+    "interval_policy": "warn"
+  },
+  "unit_map": {
+    "source": "verified_by_unit_probe",
+    "codes": {
+      "0": "mbar",
+      "1": "Pa",
+      "2": "kPa",
+      "3": "MPa",
+      "4": "hPa",
+      "5": "bar"
+    },
+    "verified_codes": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "probe_units": true,
+    "all_requested_codes_verified": true,
+    "all_probed_sensors_restored": true,
+    "probe_policy": "probe_missing_per_sensor_unit_map_0_5"
+  },
+  "sensors": [
+    {
+      "id": "p1",
+      "address": 1,
+      "enabled": true,
+      "unit_code": 2,
+      "unit_symbol": "kPa",
+      "unit_verified_by_command": "U,?",
+      "minimum_interval_s": 5.0,
+      "timing": {
+        "profiled_replies": 10,
+        "missing": 0,
+        "success_rate": 1.0,
+        "min_latency_s": 3.492218188001061,
+        "avg_latency_s": 3.5012175783000203,
+        "median_latency_s": 3.493875461499556,
+        "max_latency_s": 3.5303667100015446,
+        "recommended_minimum_interval_s": 5.0
+      },
+      "identity_raw": "01:8000,3465448,A,2,3.500,2000.000,03/04/2012,DK217 V1.02.00, 1.00,Y,0,0.000,0,,2,N,N,N,1 /1/1,11AFC846",
+      "identity_payload": "8000,3465448,A,2,3.500,2000.000,03/04/2012,DK217 V1.02.00, 1.00,Y,0,0.000,0,,2,N,N,N,1 /1/1,11AFC846",
+      "model": "8000",
+      "series": "8000",
+      "serial_number": "3465448",
+      "identity_fields": {
+        "series": "8000",
+        "serial_number": "3465448",
+        "firmware_or_date_fields_raw": [
+          "03/04/2012",
+          "DK217 V1.02.00"
+        ]
+      },
+      "unit_probe": {
+        "codes_tested": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "all_requested_codes_verified": true,
+        "restored": true,
+        "restore_policy": "restore_initial_unit",
+        "initial_unit_code": 2,
+        "final_unit_code": 2,
+        "verification_policy": "accepted_if_followup_U_query_reports_requested_code"
+      }
+    },
+    {
+      "id": "p2",
+      "address": 2,
+      "enabled": true,
+      "unit_code": 2,
+      "unit_symbol": "kPa",
+      "unit_verified_by_command": "U,?",
+      "minimum_interval_s": 2.0,
+      "timing": {
+        "profiled_replies": 10,
+        "missing": 0,
+        "success_rate": 1.0,
+        "min_latency_s": 0.9170151260004786,
+        "avg_latency_s": 0.9248647606002123,
+        "median_latency_s": 0.9172632484996939,
+        "max_latency_s": 0.9556620309995196,
+        "recommended_minimum_interval_s": 2.0
+      },
+      "identity_raw": "02:8000,3483057,A,2,3.500,1400.000,31/03/2012,DK217 V1.02.00, 1.00,Y,2,0.000,0,,2,N,N,N,1 /1/1,90F1E9D2",
+      "identity_payload": "8000,3483057,A,2,3.500,1400.000,31/03/2012,DK217 V1.02.00, 1.00,Y,2,0.000,0,,2,N,N,N,1 /1/1,90F1E9D2",
+      "model": "8000",
+      "series": "8000",
+      "serial_number": "3483057",
+      "identity_fields": {
+        "series": "8000",
+        "serial_number": "3483057",
+        "firmware_or_date_fields_raw": [
+          "31/03/2012",
+          "DK217 V1.02.00"
+        ]
+      },
+      "unit_probe": {
+        "codes_tested": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "all_requested_codes_verified": true,
+        "restored": true,
+        "restore_policy": "restore_initial_unit",
+        "initial_unit_code": 2,
+        "final_unit_code": 2,
+        "verification_policy": "accepted_if_followup_U_query_reports_requested_code"
+      }
+    },
+    {
+      "id": "p3",
+      "address": 3,
+      "enabled": true,
+      "unit_code": 2,
+      "unit_symbol": "kPa",
+      "unit_verified_by_command": "U,?",
+      "minimum_interval_s": 2.0,
+      "timing": {
+        "profiled_replies": 10,
+        "missing": 0,
+        "success_rate": 1.0,
+        "min_latency_s": 0.9452920349995111,
+        "avg_latency_s": 0.9839724075000049,
+        "median_latency_s": 0.995417269000427,
+        "max_latency_s": 0.9961578870006633,
+        "recommended_minimum_interval_s": 2.0
+      },
+      "identity_raw": "03:8000,3465460,A,2,3.500,2000.000,03/04/2012,DK217 V1.02.00, 1.00,Y,2,0.000,0,,2,N,N,N,1 /1/1,31B55CC2",
+      "identity_payload": "8000,3465460,A,2,3.500,2000.000,03/04/2012,DK217 V1.02.00, 1.00,Y,2,0.000,0,,2,N,N,N,1 /1/1,31B55CC2",
+      "model": "8000",
+      "series": "8000",
+      "serial_number": "3465460",
+      "identity_fields": {
+        "series": "8000",
+        "serial_number": "3465460",
+        "firmware_or_date_fields_raw": [
+          "03/04/2012",
+          "DK217 V1.02.00"
+        ]
+      },
+      "unit_probe": {
+        "codes_tested": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "all_requested_codes_verified": true,
+        "restored": true,
+        "restore_policy": "restore_initial_unit",
+        "initial_unit_code": 2,
+        "final_unit_code": 2,
+        "verification_policy": "accepted_if_followup_U_query_reports_requested_code"
+      }
+    },
+    {
+      "id": "p4",
+      "address": 4,
+      "enabled": true,
+      "unit_code": 2,
+      "unit_symbol": "kPa",
+      "unit_verified_by_command": "U,?",
+      "minimum_interval_s": 2.0,
+      "timing": {
+        "profiled_replies": 10,
+        "missing": 0,
+        "success_rate": 1.0,
+        "min_latency_s": 0.9234271039986197,
+        "avg_latency_s": 0.9428500735999478,
+        "median_latency_s": 0.923882715000218,
+        "max_latency_s": 0.9738516609995713,
+        "recommended_minimum_interval_s": 2.0
+      },
+      "identity_raw": "04:8000,3307508,A,5,0.00000,35.00000,27/10/2012,DK217 V1.03.00, 1.00,Y,2,0.000,0,,2,N,N,N,1 /1/1,811D7D41",
+      "identity_payload": "8000,3307508,A,5,0.00000,35.00000,27/10/2012,DK217 V1.03.00, 1.00,Y,2,0.000,0,,2,N,N,N,1 /1/1,811D7D41",
+      "model": "8000",
+      "series": "8000",
+      "serial_number": "3307508",
+      "identity_fields": {
+        "series": "8000",
+        "serial_number": "3307508",
+        "firmware_or_date_fields_raw": [
+          "27/10/2012",
+          "DK217 V1.03.00"
+        ]
+      },
+      "unit_probe": {
+        "codes_tested": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "all_requested_codes_verified": true,
+        "restored": true,
+        "restore_policy": "restore_initial_unit",
+        "initial_unit_code": 2,
+        "final_unit_code": 2,
+        "verification_policy": "accepted_if_followup_U_query_reports_requested_code"
+      }
+    }
+  ],
+  "profile": {
+    "last_profile_file": "dps_profile_20260511-162948.json",
+    "last_profile_session_id": "20260511-162948",
+    "last_profiled_at": "2026-05-11T16:29:48.029551+03:00",
+    "last_imported_at": "2026-05-11T16:31:18.312296+03:00",
+    "recommendations": {
+      "recommended_collect_timeout_s": 4.0,
+      "recommended_interval_s": 5.0,
+      "recommended_cycle_interval_s": 5.0,
+      "minimum_safe_interval_s": 4.0,
+      "interval_presets_s": [
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        15.0,
+        20.0,
+        30.0,
+        60.0
+      ],
+      "too_short_interval_presets_s": [
+        1.0,
+        2.0
+      ],
+      "worst_latency_s": 3.5303667100015446,
+      "slowest_address": 1
+    }
+  }
+}

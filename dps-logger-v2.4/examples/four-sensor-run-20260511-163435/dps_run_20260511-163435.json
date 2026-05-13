@@ -1,0 +1,151 @@
+{
+  "program": "dpslogger",
+  "version": "2.4",
+  "started_at": "2026-05-11T16:34:35.981730+03:00",
+  "session_id": "20260511-163435",
+  "config": {
+    "path": "/home/chem/test/dps_config.json",
+    "search_order": [
+      "/home/chem/test/dps_config.json",
+      "/home/chem/dps_config.json",
+      "/home/dps_config.json"
+    ],
+    "resolution_policy": "first_match_wins_no_merge_no_inheritance"
+  },
+  "transport": {
+    "port": "/dev/ttyLOG",
+    "baudrate": 9600,
+    "timeout_s": 1.0,
+    "eol": "cr",
+    "command_prefix": " "
+  },
+  "readout": {
+    "read_mode": "burst",
+    "read_command": "G",
+    "command_gap_s": 0.06,
+    "collect_timeout_s": 5.0,
+    "interval_s": 5.0,
+    "interval_policy": "warn"
+  },
+  "sensors": {
+    "active_ids": [
+      "p1",
+      "p2",
+      "p3",
+      "p4"
+    ],
+    "addresses": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "details": {
+      "p1": {
+        "address": 1,
+        "unit_code": 2,
+        "unit_symbol": "kPa",
+        "minimum_interval_s": 5.0,
+        "detail_csv": "dps_addr01_20260511-163435.csv"
+      },
+      "p2": {
+        "address": 2,
+        "unit_code": 2,
+        "unit_symbol": "kPa",
+        "minimum_interval_s": 2.0,
+        "detail_csv": "dps_addr02_20260511-163435.csv"
+      },
+      "p3": {
+        "address": 3,
+        "unit_code": 2,
+        "unit_symbol": "kPa",
+        "minimum_interval_s": 2.0,
+        "detail_csv": "dps_addr03_20260511-163435.csv"
+      },
+      "p4": {
+        "address": 4,
+        "unit_code": 2,
+        "unit_symbol": "kPa",
+        "minimum_interval_s": 2.0,
+        "detail_csv": "dps_addr04_20260511-163435.csv"
+      }
+    }
+  },
+  "logging": {
+    "interval_s": 5.0,
+    "duration_s": null,
+    "base_dir": ".",
+    "prefix": "dps",
+    "flush_every": 1,
+    "session_subdir": false
+  },
+  "csv_schema": [
+    "ts_iso",
+    "timestamp",
+    "time",
+    "cycle",
+    "addr",
+    "pressure",
+    "unit",
+    "latency_s",
+    "source",
+    "status"
+  ],
+  "summary_csv": {
+    "filename": "dps_summary_20260511-163435.csv",
+    "schema": [
+      "ts_iso",
+      "timestamp",
+      "time",
+      "cycle",
+      "p1",
+      "p2",
+      "p3",
+      "p4"
+    ],
+    "aliases": {
+      "timestamp": "timestamp",
+      "time": "time"
+    },
+    "unit": "kPa",
+    "columns": {
+      "p1": {
+        "address": 1,
+        "detail_csv": "dps_addr01_20260511-163435.csv",
+        "unit_code": 2,
+        "unit": "kPa",
+        "minimum_interval_s": 5.0
+      },
+      "p2": {
+        "address": 2,
+        "detail_csv": "dps_addr02_20260511-163435.csv",
+        "unit_code": 2,
+        "unit": "kPa",
+        "minimum_interval_s": 2.0
+      },
+      "p3": {
+        "address": 3,
+        "detail_csv": "dps_addr03_20260511-163435.csv",
+        "unit_code": 2,
+        "unit": "kPa",
+        "minimum_interval_s": 2.0
+      },
+      "p4": {
+        "address": 4,
+        "detail_csv": "dps_addr04_20260511-163435.csv",
+        "unit_code": 2,
+        "unit": "kPa",
+        "minimum_interval_s": 2.0
+      }
+    }
+  },
+  "output_files": {
+    "detail_csv": {
+      "p1": "dps_addr01_20260511-163435.csv",
+      "p2": "dps_addr02_20260511-163435.csv",
+      "p3": "dps_addr03_20260511-163435.csv",
+      "p4": "dps_addr04_20260511-163435.csv"
+    },
+    "summary_csv": "dps_summary_20260511-163435.csv"
+  }
+}
