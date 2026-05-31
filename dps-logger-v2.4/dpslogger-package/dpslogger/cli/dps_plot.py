@@ -371,7 +371,7 @@ def validate_pressure_unit(df: pd.DataFrame, csv_path: Path) -> str:
     return str(units[0])
 
 
-def load_sensor_csv(csv_path: Path) -> pd.DataFrame:
+def load_sensor_csv(csv_path: Path, *, keep_pressure_nan: bool = False) -> pd.DataFrame:
     """Load a single-sensor detail CSV and normalize column names."""
     df = pd.read_csv(csv_path)
     if "pressure" not in df.columns:
@@ -379,7 +379,12 @@ def load_sensor_csv(csv_path: Path) -> pd.DataFrame:
 
     df = normalize_time_columns(df, csv_path)
     df["pressure"] = pd.to_numeric(df["pressure"], errors="coerce")
-    df = df.dropna(subset=["time_s", "pressure"]).copy()
+    if keep_pressure_nan:
+        # Keep NaN pressure values so matplotlib can show diagnostic gaps in
+        # line plots. Other analyses still use a finite-pressure dataframe.
+        df = df.dropna(subset=["time_s"]).copy()
+    else:
+        df = df.dropna(subset=["time_s", "pressure"]).copy()
     df.attrs["pressure_unit"] = validate_pressure_unit(df, csv_path)
 
     info = extract_detail_info(csv_path)
@@ -626,6 +631,38 @@ def set_time_axis_limits(ax: plt.Axes, x_plot: np.ndarray) -> None:
 
     ax.set_xlim(x_min, x_max)
 
+
+def gap_x_positions(time_s: np.ndarray, values: np.ndarray, time_factor: float) -> np.ndarray:
+    """Return plot x-positions where finite time has a non-finite value.
+
+    These positions are useful for diagnostic plots where NaN values are
+    intentional gap markers, for example after spike cleaning.
+    """
+    time_s = np.asarray(time_s, dtype=float)
+    values = np.asarray(values, dtype=float)
+    gap_mask = np.isfinite(time_s) & ~np.isfinite(values)
+    if not np.any(gap_mask):
+        return np.asarray([], dtype=float)
+    return convert_time_axis(time_s[gap_mask], time_factor)
+
+
+def draw_gap_markers(ax: plt.Axes, x_gaps: np.ndarray, *, bw: bool, color: str | None = None) -> None:
+    """Draw vertical diagnostic markers at NaN gap positions."""
+    if len(x_gaps) == 0:
+        return
+
+    marker_color = "0.35" if bw else (color or "C3")
+    for x in x_gaps:
+        ax.axvline(
+            float(x),
+            color=marker_color,
+            linestyle=":",
+            linewidth=0.8,
+            alpha=0.55,
+            zorder=0,
+        )
+
+
 def plot_pressure_series(
     time_s: np.ndarray,
     pressure: np.ndarray,
@@ -638,6 +675,7 @@ def plot_pressure_series(
     label: str | None,
     unit: str = "",
     markers: bool = True,
+    gap_markers: bool = False,
 ) -> None:
     """Write a pressure-vs-time plot for one sensor."""
     fig, ax = plt.subplots()
@@ -657,6 +695,14 @@ def plot_pressure_series(
         alpha=style["alpha"],
         label=label,
     )
+    if gap_markers:
+        draw_gap_markers(
+            ax,
+            gap_x_positions(time_s, pressure, time_factor),
+            bw=bw,
+            color=str(theme["series"]),
+        )
+
     ax.set_xlabel(f"Time ({time_unit})")
     ax.set_ylabel(get_pressure_label(unit))
     configure_plain_axis(ax, axis="x")
@@ -684,6 +730,8 @@ def plot_combined_summary(
     bw: bool,
     unit: str = "",
     markers: bool = False,
+    show_gaps: bool = False,
+    gap_markers: bool = False,
 ) -> None:
     """Write a combined plot from summary logical sensor columns."""
     fig, ax = plt.subplots()
@@ -697,8 +745,9 @@ def plot_combined_summary(
 
     for index, sensor_column in enumerate(sensor_columns):
         y = pd.to_numeric(df[sensor_column], errors="coerce").to_numpy(dtype=float)
-        valid = np.isfinite(time_s) & np.isfinite(y)
-        if not np.any(valid):
+        finite_time = np.isfinite(time_s)
+        valid = finite_time if show_gaps else (finite_time & np.isfinite(y))
+        if not np.isfinite(y[valid]).any():
             continue
 
         plot_kwargs = {
@@ -720,11 +769,18 @@ def plot_combined_summary(
             if markers:
                 plot_kwargs["marker"] = bw_markers[index % len(bw_markers)]
 
-        ax.plot(
+        line = ax.plot(
             x_plot[valid],
             y[valid],
             **plot_kwargs,
-        )
+        )[0]
+        if gap_markers:
+            draw_gap_markers(
+                ax,
+                gap_x_positions(time_s[valid], y[valid], time_factor),
+                bw=bw,
+                color=str(line.get_color()),
+            )
 
     ax.set_xlabel(f"Time ({time_unit})")
     ax.set_ylabel(get_pressure_label(unit))
@@ -974,9 +1030,13 @@ def analyse_detail_file(
     bw: bool,
     coarse_hist: bool,
     markers: bool,
+    show_gaps: bool = False,
+    gap_markers: bool = False,
 ) -> None:
     """Create plots and statistics for one per-address detail CSV."""
-    df = load_sensor_csv(csv_path)
+    plot_df = load_sensor_csv(csv_path, keep_pressure_nan=show_gaps)
+    df = plot_df.dropna(subset=["pressure"]).copy()
+    df.attrs.update(plot_df.attrs)
 
     if len(df) == 0:
         print(f"{csv_path.name}: no valid time/pressure rows")
@@ -987,7 +1047,7 @@ def analyse_detail_file(
     x = df["time_s"].to_numpy(dtype=float)
     reg = regression(x, y) if len(df) >= 2 else None
 
-    duration_s = float(df["time_s"].iloc[-1]) if len(df) > 0 else 0.0
+    duration_s = float(plot_df["time_s"].iloc[-1]) if len(plot_df) > 0 else 0.0
     time_override = None if time_mode == "auto" else time_mode
     time_unit, time_factor = choose_time_unit(duration_s, time_override)
 
@@ -999,8 +1059,8 @@ def analyse_detail_file(
 
     label = str(df.attrs.get("sensor_name", csv_path.stem))
     plot_pressure_series(
-        time_s=x,
-        pressure=y,
+        time_s=plot_df["time_s"].to_numpy(dtype=float),
+        pressure=plot_df["pressure"].to_numpy(dtype=float),
         out=plot_png,
         grid=grid,
         dpi=dpi,
@@ -1010,6 +1070,7 @@ def analyse_detail_file(
         label=label,
         unit=get_pressure_unit(df),
         markers=markers,
+        gap_markers=gap_markers,
     )
     plot_hist(df, hist_png, hist_spec, grid, dpi, bw)
     write_stats(csv_path, df, reg, slope_th, stats_txt)
@@ -1036,6 +1097,8 @@ def analyse_summary_file(
     unit: str = "",
     per_sensor_markers: bool = True,
     combined_markers: bool = False,
+    show_gaps: bool = False,
+    gap_markers: bool = False,
 ) -> None:
     """Create combined and/or per-logical-sensor plots from a summary CSV."""
     df = load_summary_csv(summary_csv)
@@ -1060,6 +1123,8 @@ def analyse_summary_file(
             bw=bw,
             unit=unit,
             markers=combined_markers,
+            show_gaps=show_gaps,
+            gap_markers=gap_markers,
         )
         print(f"Analysed summary: {summary_csv.name}")
         print(f"  wrote: {combined_png.name}")
@@ -1067,8 +1132,9 @@ def analyse_summary_file(
     if modes.per_sensor:
         for sensor_column in sensor_columns:
             pressure = pd.to_numeric(df[sensor_column], errors="coerce").to_numpy(dtype=float)
-            valid = np.isfinite(time_s) & np.isfinite(pressure)
-            if not np.any(valid):
+            finite_time = np.isfinite(time_s)
+            valid = finite_time if show_gaps else (finite_time & np.isfinite(pressure))
+            if not np.isfinite(pressure[valid]).any():
                 print(f"  skipped: {sensor_column} has no valid values")
                 continue
             out = output_path(out_dir, f"dps_{sensor_column}_plot_{session}.png")
@@ -1084,6 +1150,7 @@ def analyse_summary_file(
                 label=sensor_column,
                 unit=unit,
                 markers=per_sensor_markers,
+                gap_markers=gap_markers,
             )
             print(f"  wrote: {out.name}")
 
@@ -1101,6 +1168,8 @@ def analyse_session(
     coarse_hist: bool,
     per_sensor_markers: bool,
     combined_markers: bool,
+    show_gaps: bool = False,
+    gap_markers: bool = False,
 ) -> None:
     """Analyse all requested outputs for a DPSlogger session."""
     unit = infer_unit_from_detail_files(session_files.detail_csvs)
@@ -1119,6 +1188,8 @@ def analyse_session(
                     bw=bw,
                     coarse_hist=coarse_hist,
                     markers=per_sensor_markers,
+                    show_gaps=show_gaps,
+                    gap_markers=gap_markers,
                 )
         elif session_files.summary_csv is not None:
             analyse_summary_file(
@@ -1132,6 +1203,8 @@ def analyse_session(
                 unit=unit,
                 per_sensor_markers=per_sensor_markers,
                 combined_markers=combined_markers,
+                show_gaps=show_gaps,
+                gap_markers=gap_markers,
             )
 
     if modes.combined:
@@ -1147,13 +1220,15 @@ def analyse_session(
                 unit=unit,
                 per_sensor_markers=per_sensor_markers,
                 combined_markers=combined_markers,
+                show_gaps=show_gaps,
+                gap_markers=gap_markers,
             )
         elif session_files.detail_csvs:
             # Fallback for old data without summary CSV: create a temporary combined
             # dataframe with p<addr> labels inferred from dps_addrNN filenames.
             dfs: list[pd.DataFrame] = []
             for detail_csv in session_files.detail_csvs:
-                df = load_sensor_csv(detail_csv)
+                df = load_sensor_csv(detail_csv, keep_pressure_nan=show_gaps)
                 info = extract_detail_info(detail_csv)
                 if info is None:
                     label = detail_csv.stem
@@ -1181,6 +1256,8 @@ def analyse_session(
                     unit=unit,
                     per_sensor_markers=per_sensor_markers,
                     combined_markers=combined_markers,
+                    show_gaps=show_gaps,
+                    gap_markers=gap_markers,
                 )
                 try:
                     synthetic_summary.unlink()
@@ -1282,6 +1359,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable point markers in the combined summary plot (default)",
     )
+    parser.add_argument(
+        "--show-gaps",
+        action="store_true",
+        help="Show NaN gaps in pressure time-series plots instead of connecting over them",
+    )
+    parser.add_argument(
+        "--gap-markers",
+        action="store_true",
+        help="Draw vertical diagnostic markers at NaN gap positions; implies --show-gaps",
+    )
 
     return parser.parse_args()
 
@@ -1302,6 +1389,7 @@ def main() -> int:
         combined_markers = False
     else:
         combined_markers = bool(args.combined_markers)
+    show_gaps = bool(args.show_gaps or args.gap_markers)
 
     try:
         if args.csv:
@@ -1324,6 +1412,8 @@ def main() -> int:
                     unit=unit,
                     per_sensor_markers=per_sensor_markers,
                     combined_markers=combined_markers,
+                    show_gaps=show_gaps,
+                    gap_markers=args.gap_markers,
                 )
             else:
                 modes = choose_modes(args, source_kind="detail")
@@ -1339,6 +1429,8 @@ def main() -> int:
                         bw=args.bw,
                         coarse_hist=coarse_hist,
                         markers=per_sensor_markers,
+                        show_gaps=show_gaps,
+                        gap_markers=args.gap_markers,
                     )
                 if modes.combined:
                     session = session_from_detail_or_stem(csv_path)
@@ -1355,6 +1447,8 @@ def main() -> int:
                         coarse_hist=coarse_hist,
                         per_sensor_markers=per_sensor_markers,
                         combined_markers=combined_markers,
+                        show_gaps=show_gaps,
+                        gap_markers=args.gap_markers,
                     )
             return 0
 
@@ -1384,6 +1478,8 @@ def main() -> int:
                         coarse_hist=coarse_hist,
                         per_sensor_markers=per_sensor_markers,
                         combined_markers=combined_markers,
+                        show_gaps=show_gaps,
+                        gap_markers=args.gap_markers,
                     )
                 return 0
 
@@ -1404,6 +1500,8 @@ def main() -> int:
                         bw=args.bw,
                         coarse_hist=coarse_hist,
                         markers=per_sensor_markers,
+                        show_gaps=show_gaps,
+                        gap_markers=args.gap_markers,
                     )
             return 0
 
@@ -1420,6 +1518,8 @@ def main() -> int:
             coarse_hist=coarse_hist,
             per_sensor_markers=per_sensor_markers,
             combined_markers=combined_markers,
+            show_gaps=show_gaps,
+            gap_markers=args.gap_markers,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

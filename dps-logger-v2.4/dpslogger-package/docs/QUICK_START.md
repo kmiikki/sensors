@@ -210,6 +210,15 @@ Generate all main plots from the latest session:
 dps-plot --latest --all
 ```
 
+If the run contains isolated pressure spikes, create plot-cleaned copies first and plot from the cleaned directory:
+
+```bash
+dps-clean --plot-clean
+dps-plot --dir clean_plot --latest --all
+```
+
+The original measurement CSV files are not modified.
+
 Black-and-white output:
 
 ```bash
@@ -274,6 +283,15 @@ It can be used to test `dps-plot` without connected hardware:
 cd ../examples/four-sensor-run-20260511-163435
 dps-plot --dir . --session 20260511-163435 --all
 ```
+
+It can also be used to test spike cleaning and plotting without connected hardware:
+
+```bash
+dps-clean --plot-clean
+dps-plot --dir clean_plot --session 20260511-163435 --all
+```
+
+The cleaned files are written under `clean_plot/`; the original example CSV files are not modified.
 
 ---
 

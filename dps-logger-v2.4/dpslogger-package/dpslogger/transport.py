@@ -37,6 +37,21 @@ class TransactionResult:
     ok: bool
 
 
+@dataclass(frozen=True)
+class LineReadResult:
+    """One complete inbound line with both decoded text and original bytes.
+
+    The raw bytes include the inbound line-ending delimiter when one was seen.
+    Decoded text keeps the old :meth:`read_lines_for` behavior by stripping CR/LF.
+    This allows diagnostics to inspect exact reply bytes without changing normal
+    parser behavior.
+    """
+
+    text: str
+    raw_bytes: bytes
+    raw_hex: str
+
+
 class SerialTransportError(Exception):
     """Generic serial transport error."""
 
@@ -152,7 +167,9 @@ class SerialTransport:
         """Split bytes into complete lines and trailing remainder.
 
         Accepts ``\n``, ``\r`` and ``\r\n`` as inbound line endings.
-        Returned complete lines do not include trailing line-ending bytes.
+        Returned complete lines include the line-ending bytes so diagnostics can
+        inspect exact reply delimiters. Callers that need text should decode via
+        :meth:`_decode_bytes`, which strips CR/LF.
         """
         lines: list[bytes] = []
         start = 0
@@ -162,13 +179,16 @@ class SerialTransport:
         while i < data_len:
             byte = data[i]
             if byte == 0x0D:  # \r
-                lines.append(data[start:i])
+                line_end = i + 1
                 if i + 1 < data_len and data[i + 1] == 0x0A:
                     i += 1
-                start = i + 1
+                    line_end = i + 1
+                lines.append(data[start:line_end])
+                start = line_end
             elif byte == 0x0A:  # \n
-                lines.append(data[start:i])
-                start = i + 1
+                line_end = i + 1
+                lines.append(data[start:line_end])
+                start = line_end
             i += 1
 
         remainder = data[start:]
@@ -226,17 +246,19 @@ class SerialTransport:
             raise SerialTransportError(f"Failed to read serial data: {exc}") from exc
         return data or b""
 
-    def read_lines_for(self, duration_s: float) -> list[str]:
-        """Collect complete lines arriving during a fixed observation window.
+    def read_line_records_for(self, duration_s: float) -> list[LineReadResult]:
+        """Collect complete line records during a fixed observation window.
 
-        Inbound data is handled tolerantly so the transport works with both real
-        hardware and ttySIM regardless of whether the sender uses ``\n``,
-        ``\r`` or ``\r\n`` line endings.
+        This is the byte-preserving companion to :meth:`read_lines_for`.  Each
+        returned record contains the decoded line text plus the exact complete
+        line bytes before decoding.  The raw bytes include the inbound line
+        ending delimiter when one was seen, while ``text`` keeps the old decoded
+        line behavior by stripping CR/LF.
         """
         if duration_s < 0:
             raise ValueError("duration_s must be >= 0")
 
-        lines: list[str] = []
+        records: list[LineReadResult] = []
         deadline = time.perf_counter() + duration_s
 
         while True:
@@ -245,10 +267,14 @@ class SerialTransport:
                 combined = self._rx_buffer + chunk
                 complete_lines, remainder = self._split_complete_lines(combined)
                 self._rx_buffer = remainder
-                lines.extend(
-                    line.decode(self.cfg.encoding, errors=self.cfg.errors)
-                    for line in complete_lines
-                )
+                for line in complete_lines:
+                    records.append(
+                        LineReadResult(
+                            text=self._decode_bytes(line),
+                            raw_bytes=line,
+                            raw_hex=line.hex(),
+                        )
+                    )
 
             if time.perf_counter() >= deadline:
                 break
@@ -256,7 +282,16 @@ class SerialTransport:
             if not chunk and self.cfg.poll_sleep_s > 0:
                 time.sleep(min(self.cfg.poll_sleep_s, max(0.0, deadline - time.perf_counter())))
 
-        return lines
+        return records
+
+    def read_lines_for(self, duration_s: float) -> list[str]:
+        """Collect complete decoded lines during a fixed observation window.
+
+        Inbound data is handled tolerantly so the transport works with both real
+        hardware and ttySIM regardless of whether the sender uses ``\n``,
+        ``\r`` or ``\r\n`` line endings.
+        """
+        return [record.text for record in self.read_line_records_for(duration_s)]
 
     def drain_for(self, duration_s: float) -> list[str]:
         """Drain unsolicited traffic for a fixed time window."""

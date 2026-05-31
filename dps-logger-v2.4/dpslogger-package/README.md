@@ -24,6 +24,7 @@ Communication uses an ASCII protocol over RS-485, typically at 9600 baud.
 - Log measurements from one or more sensors to per-sensor detail CSV files
 - Generate a researcher-friendly summary CSV with logical sensor IDs such as `p1`, `p2`, `p3`, and `p4`
 - Generate per-sensor plots, histograms, regression diagnostics, statistics, and combined summary plots
+- Detect and handle spike-like pressure artifacts before plotting
 - Use low-level serial debugging tools when troubleshooting communication problems
 
 ---
@@ -36,7 +37,7 @@ For the Raspberry Pi lab314 environment:
 
 ```bash
 sudo ./install.sh --python /opt/lab314/bin/python
-````
+```
 
 Generic installation:
 
@@ -68,6 +69,7 @@ dps-unit
 dps-autoread-off
 dps-term
 dps-plot
+dps-clean
 dps-port-check
 dps-loopback-test
 dps-setup-udev
@@ -414,6 +416,52 @@ Useful v2.4 plot options:
 --no-markers
 ```
 
+
+### dps-clean
+
+Detect and handle spike-like artifacts in DPSlogger CSV data.
+
+The tool works with DPSlogger session files such as:
+
+```text
+dps_summary_<session>.csv
+dps_addr01_<session>.csv
+dps_addr02_<session>.csv
+...
+```
+
+Typical use:
+
+```bash
+dps-clean
+```
+
+Create cleaned files optimized for plotting:
+
+```bash
+dps-clean --plot-clean
+```
+
+Process a specific session:
+
+```bash
+dps-clean --session 20260513-143623 --plot-clean
+```
+
+Typical output directory:
+
+```text
+clean_plot/
+```
+
+The original measurement files are not modified.
+
+Cleaned files can be plotted directly:
+
+```bash
+dps-plot --dir clean_plot --latest --all
+```
+
 ### dps-port-check
 
 Check that the selected serial port exists and is accessible.
@@ -506,6 +554,15 @@ dps-logger --duration 60
 dps-plot --latest --all
 ```
 
+Optional spike-cleaned plotting workflow:
+
+```bash
+dps-clean --plot-clean
+dps-plot --dir clean_plot --latest --all
+```
+
+This creates cleaned CSV copies for plotting and leaves the original measurement files unchanged.
+
 ---
 
 ## Plot Outputs
@@ -576,6 +633,7 @@ docs/RS485_PROTOCOL.md
     │   ├── common.py
     │   ├── dps_address_scan.py
     │   ├── dps_bus_logger.py
+    │   ├── dps_clean.py
     │   ├── dps_plot.py
     │   ├── dps_profile_cycle.py
     │   ├── dps_profile_to_config.py

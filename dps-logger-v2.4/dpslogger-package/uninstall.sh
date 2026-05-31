@@ -79,6 +79,7 @@ This will remove:
   ${BIN_DIR}/dps-set-address
   ${BIN_DIR}/dps-unit
   ${BIN_DIR}/dps-plot
+  ${BIN_DIR}/dps-clean
   ${BIN_DIR}/dps-port-check
   ${BIN_DIR}/dps-loopback-test
   ${BIN_DIR}/dps-setup-udev
@@ -121,6 +122,7 @@ remove_wrappers() {
     remove_wrapper "${BIN_DIR}/dps-set-address"
     remove_wrapper "${BIN_DIR}/dps-unit"
     remove_wrapper "${BIN_DIR}/dps-plot"
+    remove_wrapper "${BIN_DIR}/dps-clean"
     remove_wrapper "${BIN_DIR}/dps-port-check"
     remove_wrapper "${BIN_DIR}/dps-loopback-test"
     remove_wrapper "${BIN_DIR}/dps-setup-udev"
@@ -154,11 +156,14 @@ Removed:
   ${BIN_DIR}/dps-set-address
   ${BIN_DIR}/dps-unit
   ${BIN_DIR}/dps-plot
+  ${BIN_DIR}/dps-clean
   ${BIN_DIR}/dps-port-check
   ${BIN_DIR}/dps-loopback-test
   ${BIN_DIR}/dps-setup-udev
   ${BIN_DIR}/dps-serial-debug
   ${BIN_DIR}/dps-autoread-off
+  ${BIN_DIR}/dps-profile-cycle
+  ${BIN_DIR}/dps-profile-to-config
 
 Not removed:
   - User-owned measurement data

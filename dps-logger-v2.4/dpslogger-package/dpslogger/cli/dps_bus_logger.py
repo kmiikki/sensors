@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
+import math
 import os
 import re
 import signal
@@ -11,10 +13,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter, sleep
-from typing import Any
+from typing import Any, TextIO
 
 from dpslogger.csv_writer import CSVRotateConfig, CSVRotatingWriter
-from dpslogger.transport import SerialTransport, SerialTransportConfig
+from dpslogger.transport import LineReadResult, SerialTransport, SerialTransportConfig
 from dpslogger import __version__
 
 
@@ -31,6 +33,9 @@ DEFAULT_READ_MODE = "serial"
 DEFAULT_COMMAND_GAP_S = 0.06
 DEFAULT_COLLECT_TIMEOUT_S = 5.0
 DEFAULT_PROFILE_ROUNDS = 10
+DEFAULT_ANOMALY_THRESHOLD = 5.0
+DEFAULT_ANOMALY_CONTEXT_BEFORE = 3
+DEFAULT_ANOMALY_CONTEXT_AFTER = 3
 
 PROGRAM_NAME = "dpslogger"
 PROGRAM_VERSION = __version__
@@ -77,6 +82,192 @@ class ResolvedConfig:
     sensors: list[SensorSpec]
     unit_map: dict[str, str]
 
+
+class DebugRecorder:
+    """Optional JSONL diagnostics for serial traffic and rare pressure anomalies.
+
+    The normal detail and summary CSV files remain unchanged. Serial debugging is
+    intentionally verbose and is meant for short test runs. Anomaly debugging is
+    event-triggered and records only suspicious OK-valued jumps compared with the
+    previous accepted value for the same logical sensor.
+
+    Anomaly events include a small before/after context window so long runs can
+    capture enough evidence without writing every serial event.
+    """
+
+    def __init__(self, out_dir: Path, session_id: str, args: argparse.Namespace) -> None:
+        self.serial_enabled = bool(args.debug_serial)
+        self.anomalies_enabled = bool(args.debug_anomalies)
+        self.anomaly_threshold = float(args.anomaly_threshold)
+        self.context_before = int(args.anomaly_context_before)
+        self.context_after = int(args.anomaly_context_after)
+        self.serial_path = out_dir / f"dps_serial_debug_{session_id}.jsonl"
+        self.anomaly_path = out_dir / f"dps_anomalies_{session_id}.jsonl"
+        self._serial_file: TextIO | None = None
+        self._anomaly_file: TextIO | None = None
+        self._previous_ok: dict[str, float] = {}
+        self._history: dict[str, deque[dict[str, object]]] = {}
+        self._pending: list[dict[str, object]] = []
+
+    @property
+    def enabled(self) -> bool:
+        """Return True if any diagnostic output is enabled."""
+        return self.serial_enabled or self.anomalies_enabled
+
+    def open(self) -> None:
+        """Open enabled JSONL outputs."""
+        if self.serial_enabled:
+            self._serial_file = self.serial_path.open("w", encoding="utf-8")
+        if self.anomalies_enabled:
+            self._anomaly_file = self.anomaly_path.open("w", encoding="utf-8")
+
+    def close(self) -> None:
+        """Flush pending anomaly events and close JSONL outputs."""
+        if self._anomaly_file is not None:
+            self._flush_pending(complete=False)
+        for handle in (self._serial_file, self._anomaly_file):
+            if handle is not None:
+                handle.close()
+        self._serial_file = None
+        self._anomaly_file = None
+
+    def emit_serial(self, event: dict[str, object]) -> None:
+        """Write one raw serial diagnostic event, if enabled."""
+        if not self.serial_enabled or self._serial_file is None:
+            return
+        self._write_jsonl(self._serial_file, event)
+
+    def check_anomalies(
+        self,
+        *,
+        rows_by_id: dict[str, dict[str, object]],
+        sensors: list[SensorSpec],
+        read_mode: str,
+        read_command: str,
+    ) -> None:
+        """Detect and record suspicious OK-valued jumps after one completed cycle."""
+        if not self.anomalies_enabled or self._anomaly_file is None:
+            return
+
+        # First, feed this completed cycle into events that were already pending
+        # from earlier cycles. Newly detected anomalies below do not receive the
+        # same cycle as after-context.
+        self._collect_after_context(rows_by_id, sensors)
+
+        for sensor in sensors:
+            logical_id = sensor.logical_id
+            row = rows_by_id[logical_id]
+            if row.get("status") != "OK":
+                continue
+
+            try:
+                value = float(str(row.get("pressure", "")))
+            except ValueError:
+                continue
+            if not math.isfinite(value):
+                continue
+
+            previous = self._previous_ok.get(logical_id)
+            if previous is None:
+                self._previous_ok[logical_id] = value
+                self._remember_context(logical_id, row)
+                continue
+
+            delta = abs(value - previous)
+            if delta >= self.anomaly_threshold:
+                event = {
+                    "event": "pressure_jump",
+                    "created_at": datetime.now().astimezone().isoformat(),
+                    "read_mode": read_mode,
+                    "read_command": read_command,
+                    "cycle": row.get("cycle"),
+                    "sensor": logical_id,
+                    "address": sensor.address,
+                    "unit": sensor.unit_symbol,
+                    "value": value,
+                    "previous_value": previous,
+                    "delta_abs": delta,
+                    "threshold": self.anomaly_threshold,
+                    "context_before_requested": self.context_before,
+                    "context_after_requested": self.context_after,
+                    "context_before": list(self._history.get(logical_id, [])),
+                    "anomaly_row": self._compact_row(row),
+                    "context_after": [],
+                    "context_after_complete": self.context_after == 0,
+                }
+                if self.context_after <= 0:
+                    self._write_jsonl(self._anomaly_file, event)
+                else:
+                    self._pending.append(event)
+                # Do not let a likely one-point spike replace the baseline or
+                # enter the normal before-context history.
+                continue
+
+            self._previous_ok[logical_id] = value
+            self._remember_context(logical_id, row)
+
+    def _remember_context(self, logical_id: str, row: dict[str, object]) -> None:
+        if self.context_before <= 0:
+            return
+        if logical_id not in self._history:
+            self._history[logical_id] = deque(maxlen=self.context_before)
+        self._history[logical_id].append(self._compact_row(row))
+
+    def _collect_after_context(self, rows_by_id: dict[str, dict[str, object]], sensors: list[SensorSpec]) -> None:
+        if not self._pending:
+            return
+        completed: list[dict[str, object]] = []
+        sensor_ids = {sensor.logical_id for sensor in sensors}
+        for event in self._pending:
+            logical_id = str(event.get("sensor", ""))
+            if logical_id not in sensor_ids or logical_id not in rows_by_id:
+                continue
+            after = event.setdefault("context_after", [])
+            if isinstance(after, list) and len(after) < self.context_after:
+                after.append(self._compact_row(rows_by_id[logical_id]))
+            if isinstance(after, list) and len(after) >= self.context_after:
+                event["context_after_complete"] = True
+                completed.append(event)
+        if completed:
+            for event in completed:
+                self._write_jsonl(self._anomaly_file, event)
+            self._pending = [event for event in self._pending if event not in completed]
+
+    def _flush_pending(self, complete: bool) -> None:
+        if self._anomaly_file is None:
+            return
+        for event in self._pending:
+            event["context_after_complete"] = complete
+            self._write_jsonl(self._anomaly_file, event)
+        self._pending = []
+
+    @staticmethod
+    def _compact_row(row: dict[str, object]) -> dict[str, object]:
+        return {
+            "cycle": row.get("cycle"),
+            "time": row.get("time"),
+            "timestamp": row.get("timestamp"),
+            "addr": row.get("addr"),
+            "pressure": row.get("pressure"),
+            "unit": row.get("unit"),
+            "status": row.get("status"),
+            "latency_s": row.get("latency_s"),
+            "command": row.get("_debug_command"),
+            "expected_address": row.get("_debug_expected_address"),
+            "received_address": row.get("_debug_received_address"),
+            "raw_reply_repr": row.get("_debug_raw_reply_repr"),
+            "raw_reply_hex": row.get("_debug_raw_reply_hex"),
+            "raw_reply_hex_source": row.get("_debug_raw_reply_hex_source"),
+            "decoded_reply": row.get("_debug_decoded_reply"),
+            "payload": row.get("_debug_payload"),
+            "parse_status": row.get("_debug_parse_status"),
+        }
+
+    @staticmethod
+    def _write_jsonl(handle: TextIO, event: dict[str, object]) -> None:
+        json.dump(event, handle, ensure_ascii=False, default=str)
+        handle.write("\n")
+        handle.flush()
 
 def get_sec_fractions(resolution: int = 5) -> float:
     now = datetime.now()
@@ -215,6 +406,51 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true", help="Print extra per-sensor technical status")
     parser.add_argument("--quiet", action="store_true", help="Do not print cycle rows")
     parser.add_argument("--no-sync", action="store_true", help="Do not wait for a whole-second boundary before logging")
+
+    parser.add_argument(
+        "--debug-anomalies",
+        action="store_true",
+        help=(
+            "Write event-triggered anomaly diagnostics to "
+            "dps_anomalies_<session>.jsonl without changing measurement CSV output"
+        ),
+    )
+    parser.add_argument(
+        "--anomaly-threshold",
+        type=positive_float,
+        default=DEFAULT_ANOMALY_THRESHOLD,
+        help=(
+            "Absolute jump threshold for --debug-anomalies in pressure units "
+            f"(default: {DEFAULT_ANOMALY_THRESHOLD})"
+        ),
+    )
+    parser.add_argument(
+        "--anomaly-context-before",
+        type=int,
+        default=DEFAULT_ANOMALY_CONTEXT_BEFORE,
+        help=(
+            "Number of previous normal rows to include in each anomaly JSONL event "
+            f"(default: {DEFAULT_ANOMALY_CONTEXT_BEFORE})"
+        ),
+    )
+    parser.add_argument(
+        "--anomaly-context-after",
+        type=int,
+        default=DEFAULT_ANOMALY_CONTEXT_AFTER,
+        help=(
+            "Number of following rows to include in each anomaly JSONL event "
+            f"(default: {DEFAULT_ANOMALY_CONTEXT_AFTER})"
+        ),
+    )
+
+    parser.add_argument(
+        "--debug-serial",
+        action="store_true",
+        help=(
+            "Write raw serial send/receive diagnostics to "
+            "dps_serial_debug_<session>.jsonl. This can be large; use for short test runs."
+        ),
+    )
     return parser
 
 
@@ -532,6 +768,15 @@ def write_run_metadata(
             "flush_every": args.flush_every,
             "session_subdir": args.session_subdir,
         },
+        "debug": {
+            "debug_anomalies": bool(args.debug_anomalies),
+            "anomaly_threshold": float(args.anomaly_threshold),
+            "anomaly_context_before": int(args.anomaly_context_before),
+            "anomaly_context_after": int(args.anomaly_context_after),
+            "debug_serial": bool(args.debug_serial),
+            "anomaly_jsonl": f"dps_anomalies_{session_id}.jsonl" if args.debug_anomalies else None,
+            "serial_jsonl": f"dps_serial_debug_{session_id}.jsonl" if args.debug_serial else None,
+        },
         "csv_schema": detail_headers(),
         "summary_csv": None,
         "output_files": {
@@ -604,11 +849,47 @@ def _row_template(sensor: SensorSpec, ts_iso: str, t_epoch: float, t_rel: float,
     }
 
 
+
+def _line_text(record: LineReadResult | str) -> str:
+    """Return decoded line text from either a byte-preserving record or legacy str."""
+    return record.text if isinstance(record, LineReadResult) else record
+
+
+def _line_repr(record: LineReadResult | str) -> str:
+    """Return a debug-safe representation of one inbound line."""
+    if isinstance(record, LineReadResult):
+        return repr(record.raw_bytes)
+    return repr(record)
+
+
+def _line_hex(record: LineReadResult | str) -> str:
+    """Return hex representation of the inbound line."""
+    if isinstance(record, LineReadResult):
+        return record.raw_hex
+    return record.encode("ascii", errors="replace").hex()
+
+
+def _line_hex_source(record: LineReadResult | str) -> str:
+    """Return whether hex came from raw bytes or decoded-text fallback."""
+    return "raw_bytes" if isinstance(record, LineReadResult) else "decoded_text_fallback"
+
+
+def _debug_line_fields(record: LineReadResult | str) -> dict[str, object]:
+    """Return common JSONL fields for an inbound serial line."""
+    return {
+        "raw_reply_repr": _line_repr(record),
+        "raw_reply_hex": _line_hex(record),
+        "raw_reply_hex_source": _line_hex_source(record),
+        "decoded_reply": _line_text(record),
+    }
+
+
 def _read_cycle_burst(
     transport: SerialTransport,
     resolved: ResolvedConfig,
     cycle: int,
     t0_epoch: float | None,
+    debug: DebugRecorder | None = None,
 ) -> tuple[dict[str, dict[str, object]], float]:
     wall_now = datetime.now().astimezone()
     ts_iso = wall_now.isoformat()
@@ -624,7 +905,23 @@ def _read_cycle_burst(
     transport.clear_buffers()
     for sensor in resolved.sensors:
         command = command_for_address(sensor.address, resolved.read_command, resolved.command_prefix)
-        send_times[sensor.address] = perf_counter()
+        send_time = perf_counter()
+        send_times[sensor.address] = send_time
+        row = rows[sensor.logical_id]
+        row["_debug_command"] = command
+        row["_debug_expected_address"] = sensor.address
+        row["_debug_send_perf"] = send_time
+        if debug is not None:
+            debug.emit_serial({
+                "event": "send",
+                "created_at": datetime.now().astimezone().isoformat(),
+                "mode": "burst",
+                "cycle": cycle,
+                "sensor": sensor.logical_id,
+                "address": sensor.address,
+                "command": command,
+                "perf_counter": send_time,
+            })
         transport.write_line(command)
         if resolved.command_gap_s > 0:
             sleep(resolved.command_gap_s)
@@ -633,28 +930,105 @@ def _read_cycle_burst(
     seen: set[int] = set()
     while perf_counter() < deadline and len(seen) < len(resolved.sensors):
         remaining = max(0.0, deadline - perf_counter())
-        lines = transport.read_lines_for(min(0.05, remaining))
-        if not lines:
+        records = transport.read_line_records_for(min(0.05, remaining))
+        if not records:
             continue
         now = perf_counter()
-        for line in lines:
+        for record in records:
+            line = _line_text(record)
             parsed = parse_addressed_reply(line)
             if parsed is None:
+                if debug is not None:
+                    debug.emit_serial({
+                        "event": "receive_unparsed",
+                        "created_at": datetime.now().astimezone().isoformat(),
+                        "mode": "burst",
+                        "cycle": cycle,
+                        **_debug_line_fields(record),
+                        "perf_counter": now,
+                    })
                 continue
             address, payload = parsed
             sensor = sensor_by_addr.get(address)
-            if sensor is None or address in seen:
+            if sensor is None:
+                if debug is not None:
+                    debug.emit_serial({
+                        "event": "receive_unexpected_address",
+                        "created_at": datetime.now().astimezone().isoformat(),
+                        "mode": "burst",
+                        "cycle": cycle,
+                        "received_address": address,
+                        "payload": payload,
+                        **_debug_line_fields(record),
+                        "perf_counter": now,
+                    })
+                continue
+            if address in seen:
+                if debug is not None:
+                    debug.emit_serial({
+                        "event": "receive_duplicate",
+                        "created_at": datetime.now().astimezone().isoformat(),
+                        "mode": "burst",
+                        "cycle": cycle,
+                        "sensor": sensor.logical_id,
+                        "received_address": address,
+                        "payload": payload,
+                        **_debug_line_fields(record),
+                        "perf_counter": now,
+                    })
                 continue
             seen.add(address)
             row = rows[sensor.logical_id]
+            row["_debug_receive_perf"] = now
+            row["_debug_received_address"] = address
+            row["_debug_raw_reply_repr"] = _line_repr(record)
+            row["_debug_raw_reply_hex"] = _line_hex(record)
+            row["_debug_raw_reply_hex_source"] = _line_hex_source(record)
+            row["_debug_decoded_reply"] = line
+            row["_debug_payload"] = payload
             try:
                 pressure = float(payload)
                 row["pressure"] = format_pressure_for_unit(pressure, sensor.unit_symbol)
                 row["status"] = "OK"
+                row["_debug_parse_status"] = "OK"
             except ValueError:
                 row["pressure"] = ""
                 row["status"] = f"ERR:bad payload {payload!r}"
+                row["_debug_parse_status"] = "bad_payload"
             row["latency_s"] = f"{now - send_times[address]:.6f}"
+            if debug is not None:
+                debug.emit_serial({
+                    "event": "receive",
+                    "created_at": datetime.now().astimezone().isoformat(),
+                    "mode": "burst",
+                    "cycle": cycle,
+                    "sensor": sensor.logical_id,
+                    "expected_address": sensor.address,
+                    "received_address": address,
+                    "command": row.get("_debug_command"),
+                    "payload": payload,
+                    "status": row.get("status"),
+                    "latency_s": row.get("latency_s"),
+                    **_debug_line_fields(record),
+                    "perf_counter": now,
+                })
+
+    if debug is not None:
+        for sensor in resolved.sensors:
+            if sensor.address in seen:
+                continue
+            row = rows[sensor.logical_id]
+            row["_debug_parse_status"] = "missing"
+            debug.emit_serial({
+                "event": "missing",
+                "created_at": datetime.now().astimezone().isoformat(),
+                "mode": "burst",
+                "cycle": cycle,
+                "sensor": sensor.logical_id,
+                "address": sensor.address,
+                "command": row.get("_debug_command"),
+                "status": row.get("status"),
+            })
 
     return rows, t0_epoch
 
@@ -665,6 +1039,7 @@ def _read_one_serial(
     sensor: SensorSpec,
     cycle: int,
     t0_epoch: float | None,
+    debug: DebugRecorder | None = None,
 ) -> tuple[dict[str, object], float]:
     wall_now = datetime.now().astimezone()
     ts_iso = wall_now.isoformat()
@@ -677,36 +1052,130 @@ def _read_one_serial(
     command = command_for_address(sensor.address, resolved.read_command, resolved.command_prefix)
     transport.clear_buffers()
     t_cmd = perf_counter()
+    row["_debug_command"] = command
+    row["_debug_expected_address"] = sensor.address
+    row["_debug_send_perf"] = t_cmd
+    if debug is not None:
+        debug.emit_serial({
+            "event": "send",
+            "created_at": datetime.now().astimezone().isoformat(),
+            "mode": "serial",
+            "cycle": cycle,
+            "sensor": sensor.logical_id,
+            "address": sensor.address,
+            "command": command,
+            "perf_counter": t_cmd,
+        })
     try:
         transport.write_line(command)
         deadline = perf_counter() + resolved.collect_timeout_s
         while perf_counter() < deadline:
             remaining = max(0.0, deadline - perf_counter())
-            lines = transport.read_lines_for(min(0.05, remaining))
-            if not lines:
+            records = transport.read_line_records_for(min(0.05, remaining))
+            if not records:
                 continue
             now = perf_counter()
-            for line in lines:
+            for record in records:
+                line = _line_text(record)
                 parsed = parse_addressed_reply(line)
                 if parsed is None:
+                    if debug is not None:
+                        debug.emit_serial({
+                            "event": "receive_unparsed",
+                            "created_at": datetime.now().astimezone().isoformat(),
+                            "mode": "serial",
+                            "cycle": cycle,
+                            "sensor": sensor.logical_id,
+                            "expected_address": sensor.address,
+                            "command": command,
+                            "raw_reply_repr": repr(line),
+                            "decoded_reply": line,
+                            "perf_counter": now,
+                        })
                     continue
                 address, payload = parsed
                 if address != sensor.address:
+                    if debug is not None:
+                        debug.emit_serial({
+                            "event": "receive_unexpected_address",
+                            "created_at": datetime.now().astimezone().isoformat(),
+                            "mode": "serial",
+                            "cycle": cycle,
+                            "sensor": sensor.logical_id,
+                            "expected_address": sensor.address,
+                            "received_address": address,
+                            "command": command,
+                            "payload": payload,
+                            "raw_reply_repr": repr(line),
+                            "decoded_reply": line,
+                            "perf_counter": now,
+                        })
                     continue
+                row["_debug_receive_perf"] = now
+                row["_debug_received_address"] = address
+                row["_debug_raw_reply_repr"] = _line_repr(record)
+                row["_debug_raw_reply_hex"] = _line_hex(record)
+                row["_debug_raw_reply_hex_source"] = _line_hex_source(record)
+                row["_debug_decoded_reply"] = line
+                row["_debug_payload"] = payload
                 try:
                     pressure = float(payload)
                     row["pressure"] = format_pressure_for_unit(pressure, sensor.unit_symbol)
                     row["status"] = "OK"
+                    row["_debug_parse_status"] = "OK"
                 except ValueError:
                     row["status"] = f"ERR:bad payload {payload!r}"
+                    row["_debug_parse_status"] = "bad_payload"
                 row["latency_s"] = f"{now - t_cmd:.6f}"
+                if debug is not None:
+                    debug.emit_serial({
+                        "event": "receive",
+                        "created_at": datetime.now().astimezone().isoformat(),
+                        "mode": "serial",
+                        "cycle": cycle,
+                        "sensor": sensor.logical_id,
+                        "expected_address": sensor.address,
+                        "received_address": address,
+                        "command": command,
+                        "payload": payload,
+                        "status": row.get("status"),
+                        "latency_s": row.get("latency_s"),
+                        **_debug_line_fields(record),
+                        "perf_counter": now,
+                    })
                 return row, t0_epoch
         row["status"] = "ERR:timeout"
         row["latency_s"] = f"{perf_counter() - t_cmd:.6f}"
+        row["_debug_parse_status"] = "timeout"
+        if debug is not None:
+            debug.emit_serial({
+                "event": "timeout",
+                "created_at": datetime.now().astimezone().isoformat(),
+                "mode": "serial",
+                "cycle": cycle,
+                "sensor": sensor.logical_id,
+                "address": sensor.address,
+                "command": command,
+                "latency_s": row.get("latency_s"),
+                "status": row.get("status"),
+            })
         return row, t0_epoch
     except Exception as exc:
         row["status"] = f"ERR:{exc}"
         row["latency_s"] = f"{perf_counter() - t_cmd:.6f}"
+        row["_debug_parse_status"] = "exception"
+        if debug is not None:
+            debug.emit_serial({
+                "event": "exception",
+                "created_at": datetime.now().astimezone().isoformat(),
+                "mode": "serial",
+                "cycle": cycle,
+                "sensor": sensor.logical_id,
+                "address": sensor.address,
+                "command": command,
+                "latency_s": row.get("latency_s"),
+                "status": row.get("status"),
+            })
         return row, t0_epoch
 
 
@@ -715,10 +1184,11 @@ def _read_cycle_serial(
     resolved: ResolvedConfig,
     cycle: int,
     t0_epoch: float | None,
+    debug: DebugRecorder | None = None,
 ) -> tuple[dict[str, dict[str, object]], float]:
     rows: dict[str, dict[str, object]] = {}
     for sensor in resolved.sensors:
-        row, t0_epoch = _read_one_serial(transport, resolved, sensor, cycle, t0_epoch)
+        row, t0_epoch = _read_one_serial(transport, resolved, sensor, cycle, t0_epoch, debug)
         rows[sensor.logical_id] = row
     if t0_epoch is None:
         t0_epoch = datetime.now().astimezone().timestamp()
@@ -1055,6 +1525,7 @@ def run_logger(args: argparse.Namespace) -> int:
         for sensor in resolved.sensors
     }
     summary_writer = _make_summary_writer(out_dir, resolved.sensors, args.flush_every, file_suffix) if args.summary else None
+    debug_recorder = DebugRecorder(out_dir, session_id, args)
 
     entered_detail_writers: dict[str, CSVRotatingWriter] = {}
     entered_summary_writer: CSVRotatingWriter | None = None
@@ -1065,6 +1536,7 @@ def run_logger(args: argparse.Namespace) -> int:
                 entered_detail_writers[logical_id] = writer.__enter__()
             if summary_writer is not None:
                 entered_summary_writer = summary_writer.__enter__()
+            debug_recorder.open()
 
             print(f"{PROGRAM_NAME} v{PROGRAM_VERSION}")
             if resolved.config_path:
@@ -1092,6 +1564,14 @@ def run_logger(args: argparse.Namespace) -> int:
             print(f"Run metadata: {meta_path}")
             if args.summary:
                 print(f"Summary CSV: {out_dir / summary_filename(file_suffix)}")
+            if args.debug_anomalies:
+                print(f"Anomaly debug JSONL: {debug_recorder.anomaly_path}")
+                print(
+                    "Anomaly context: "
+                    f"before={args.anomaly_context_before}, after={args.anomaly_context_after}"
+                )
+            if args.debug_serial:
+                print(f"Serial debug JSONL: {debug_recorder.serial_path}")
             print("Stop with Ctrl+C (logger will finish current cycle before stopping).")
 
             if not args.no_sync:
@@ -1113,9 +1593,16 @@ def run_logger(args: argparse.Namespace) -> int:
                 try:
                     cycle += 1
                     if resolved.read_mode == "burst":
-                        rows_by_id, t0_epoch = _read_cycle_burst(transport, resolved, cycle, t0_epoch)
+                        rows_by_id, t0_epoch = _read_cycle_burst(transport, resolved, cycle, t0_epoch, debug_recorder)
                     else:
-                        rows_by_id, t0_epoch = _read_cycle_serial(transport, resolved, cycle, t0_epoch)
+                        rows_by_id, t0_epoch = _read_cycle_serial(transport, resolved, cycle, t0_epoch, debug_recorder)
+
+                    debug_recorder.check_anomalies(
+                        rows_by_id=rows_by_id,
+                        sensors=resolved.sensors,
+                        read_mode=resolved.read_mode,
+                        read_command=resolved.read_command,
+                    )
 
                     for sensor in resolved.sensors:
                         row = rows_by_id[sensor.logical_id]
@@ -1163,6 +1650,7 @@ def run_logger(args: argparse.Namespace) -> int:
                     sleep(wait_time)
 
     finally:
+        debug_recorder.close()
         for writer in entered_detail_writers.values():
             writer.__exit__(None, None, None)
         if entered_summary_writer is not None:
@@ -1193,6 +1681,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.pretty:
         args.print_rows = False
+
+    if args.anomaly_context_before < 0:
+        parser.error("--anomaly-context-before must be >= 0")
+    if args.anomaly_context_after < 0:
+        parser.error("--anomaly-context-after must be >= 0")
 
     return args
 

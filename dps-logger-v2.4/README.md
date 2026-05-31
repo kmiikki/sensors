@@ -24,6 +24,7 @@ Communication uses an ASCII protocol over RS-485, typically at 9600 baud.
 - Log measurements from one or more sensors to per-sensor detail CSV files
 - Generate a researcher-friendly summary CSV with logical sensor IDs such as `p1`, `p2`, `p3`, and `p4`
 - Generate per-sensor plots, histograms, regression diagnostics, statistics, and combined summary plots
+- Detect and handle spike-like pressure artifacts before plotting with `dps-clean`
 - Use low-level serial debugging tools when troubleshooting communication problems
 
 ---
@@ -36,7 +37,7 @@ For the Raspberry Pi lab314 environment:
 
 ```bash
 sudo ./install.sh --python /opt/lab314/bin/python
-````
+```
 
 Generic installation:
 
@@ -68,6 +69,7 @@ dps-unit
 dps-autoread-off
 dps-term
 dps-plot
+dps-clean
 dps-port-check
 dps-loopback-test
 dps-setup-udev
@@ -414,6 +416,28 @@ Useful v2.4 plot options:
 --no-markers
 ```
 
+### dps-clean
+
+Detect and handle spike-like artifacts in DPSlogger CSV data.
+
+Typical use:
+
+```bash
+dps-clean --plot-clean
+```
+
+This writes cleaned DPS-compatible CSV files under:
+
+```text
+clean_plot/
+```
+
+The original measurement files are not modified. Cleaned files can be plotted directly:
+
+```bash
+dps-plot --dir clean_plot --latest --all
+```
+
 ### dps-port-check
 
 Check that the selected serial port exists and is accessible.
@@ -506,6 +530,15 @@ dps-logger --duration 60
 dps-plot --latest --all
 ```
 
+Optional spike-cleaned plotting workflow:
+
+```bash
+dps-clean --plot-clean
+dps-plot --dir clean_plot --latest --all
+```
+
+This preserves the original measurement CSV files and generates plots from cleaned copies.
+
 ---
 
 ## Plot Outputs
@@ -559,6 +592,15 @@ The example can be used to test plotting without connected hardware:
 cd ../examples/four-sensor-run-20260511-163435
 dps-plot --dir . --session 20260511-163435 --all
 ```
+
+It can also be used to test spike cleaning without connected hardware:
+
+```bash
+dps-clean --plot-clean
+dps-plot --dir clean_plot --session 20260511-163435 --all
+```
+
+The cleaned files are written under `clean_plot/`. The original example CSV files are not modified.
 
 ---
 

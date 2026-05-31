@@ -352,6 +352,69 @@ Use `--bins N` when a specific histogram bin count is required. Explicit `--bins
 
 ---
 
+## dps-clean
+
+Detect and handle spike-like artifacts in DPSlogger CSV data.
+
+The tool works with DPSlogger session files such as:
+
+```text
+dps_summary_<session>.csv
+dps_addr01_<session>.csv
+dps_addr02_<session>.csv
+...
+```
+
+Typical usage:
+
+```bash
+dps-clean
+```
+
+Create cleaned files optimized for plotting:
+
+```bash
+dps-clean --plot-clean
+```
+
+Process a specific session:
+
+```bash
+dps-clean --session 20260513-143623 --plot-clean
+```
+
+Typical output:
+
+```text
+clean_plot/
+├── dps_summary_<session>.csv
+├── dps_addr01_<session>.csv
+├── dps_addr02_<session>.csv
+└── spike_report_<session>.csv
+```
+
+The original measurement files are never modified.
+
+Cleaned files can be plotted directly:
+
+```bash
+dps-plot --dir clean_plot --latest --all
+```
+
+Typical options:
+
+```text
+--session SESSION
+--plot-clean
+--interpolate
+--window N
+--soft-threshold VALUE
+--hard-threshold VALUE
+--max-gap N
+```
+
+---
+
 ## dps-port-check
 
 Check that the selected serial port exists and is accessible.
@@ -419,3 +482,13 @@ Later runs, when `dps_config.json` already exists:
 dps-logger --duration 60
 dps-plot --latest --all
 ```
+
+### With spike cleaning
+
+```bash
+dps-logger --duration 60
+dps-clean --plot-clean
+dps-plot --dir clean_plot --latest --all
+```
+
+This workflow preserves the original measurement files and generates plots from cleaned copies.

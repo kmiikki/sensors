@@ -105,6 +105,7 @@ check_source_tree() {
     [[ -f "${SOURCE_DIR}/cli/dps_set_address.py" ]] || die "Missing dps_set_address.py"
     [[ -f "${SOURCE_DIR}/cli/dps_unit.py" ]] || die "Missing dps_unit.py"
     [[ -f "${SOURCE_DIR}/cli/dps_plot.py" ]] || die "Missing dps_plot.py"
+    [[ -f "${SOURCE_DIR}/cli/dps_clean.py" ]] || die "Missing dps_clean.py"
 
     [[ -f "${SOURCE_DIR}/tools/loopback_test.py" ]] || die "Missing loopback_test.py"
     [[ -f "${SOURCE_DIR}/tools/port_check.py" ]] || die "Missing port_check.py"
@@ -276,6 +277,7 @@ install_wrappers() {
     write_module_wrapper "${BIN_DIR}/dps-set-address" "dpslogger.cli.dps_set_address"
     write_module_wrapper "${BIN_DIR}/dps-unit" "dpslogger.cli.dps_unit"
     write_module_wrapper "${BIN_DIR}/dps-plot" "dpslogger.cli.dps_plot"
+    write_module_wrapper "${BIN_DIR}/dps-clean" "dpslogger.cli.dps_clean"
 
     write_tool_wrapper "${BIN_DIR}/dps-port-check" "dpslogger/tools/port_check.py"
     write_tool_wrapper "${BIN_DIR}/dps-loopback-test" "dpslogger/tools/loopback_test.py"
@@ -306,6 +308,7 @@ set_permissions() {
     chmod 755 "${BIN_DIR}/dps-set-address"
     chmod 755 "${BIN_DIR}/dps-unit"
     chmod 755 "${BIN_DIR}/dps-plot"
+    chmod 755 "${BIN_DIR}/dps-clean"
     chmod 755 "${BIN_DIR}/dps-port-check"
     chmod 755 "${BIN_DIR}/dps-loopback-test"
     chmod 755 "${BIN_DIR}/dps-setup-udev"
@@ -325,6 +328,7 @@ post_install_test() {
     "${BIN_DIR}/dps-set-address" --help >/dev/null
     "${BIN_DIR}/dps-unit" --help >/dev/null
     "${BIN_DIR}/dps-plot" --help >/dev/null
+    "${BIN_DIR}/dps-clean" --help >/dev/null
     "${BIN_DIR}/dps-port-check" --help >/dev/null
     "${BIN_DIR}/dps-loopback-test" --help >/dev/null
     "${BIN_DIR}/dps-setup-udev" --help >/dev/null
@@ -359,6 +363,7 @@ Commands:
   ${BIN_DIR}/dps-set-address
   ${BIN_DIR}/dps-unit
   ${BIN_DIR}/dps-plot
+  ${BIN_DIR}/dps-clean
   ${BIN_DIR}/dps-port-check
   ${BIN_DIR}/dps-loopback-test
   ${BIN_DIR}/dps-setup-udev
